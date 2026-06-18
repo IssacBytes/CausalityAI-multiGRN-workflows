@@ -208,11 +208,11 @@ data.frame(
 
 | 方法 | 类型A 学习稿 | 类型B 报告稿 | 分支 | 备注 |
 |------|:---:|:---:|------|------|
-| AUCell | ✅ 官方数据版 | ⬜ 待做 | `claude-aucell-rewrite`(PR#3) | 已按数据铁律重写为 GSE60361 真实数据；旧模拟版被替换 |
-| UCell | ⬜ 待做 | 🟡 雏形 | `claude-ucell` | Zilionis 文档已在 main，需按 §4 升级到"美观报告"档 |
-| GSVA | ⚠️ 需重写 | ⬜ | `claude-gsva`(已合并) | 现 main 上是**模拟数据版**，违反数据铁律；待用 `GSVAdata`(Pickrell/Huang + c2BroadSets) 重写 |
+| AUCell | ✅ 官方数据版 | ⬜ 待做 | (已合并 PR#3) | GSE60361 真实数据 |
+| GSVA | ✅ 官方数据版 | ⬜ 待做 | (已合并 PR#4) | GSVAdata(Pickrell/Huang + c2BroadSets) 真实数据，只做 gsva+ssgsea |
+| UCell | ✅ 官方数据版 | 🟡 雏形 | `claude-ucell-manual` | 学习稿用 `sample.matrix` 真实数据；workflow 雏形已在 main，需按 §4 升级"美观报告"；路径已按 §5 修复 |
 
-**优先级**：① GSVA 学习稿按数据铁律用 `GSVAdata` 重写（与 AUCell 对齐）；② 补 AUCell↔UCell 对称缺口（AUCell 加报告稿、UCell 加学习稿）；③ 各方法报告稿。
+**三方法学习稿（类型 A）已全部完成且均为官方真实数据。** 下一步优先级：① 各方法**报告稿（类型 B）**——UCell 现有 workflow 升级到美观档、AUCell/GSVA 新建报告稿；② 跨方法对比（统一长表，§7）。
 
 **待用户决策**（阻塞项）：
 1. ~~第三个方法是 GSVA 还是 ssGSEA~~ → **已定 = GSVA 包，只做 `gsva`+`ssgsea` 两 method**（见 §1）。
