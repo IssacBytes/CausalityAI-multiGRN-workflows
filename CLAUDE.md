@@ -52,11 +52,17 @@
   - ✅ 算法只讲到「**直觉 + 输入输出契约**」层面，让人知道某参数"在哪一步、起什么作用、调大调小有何后果"。
   - 🚫 **不往下走到内核**：不逐行复刻算法、不展开 C/Fortran/数值推导、不做"重写这个包"级别的源码考古。源码引用仅用于定位"参数在哪生效"，点到为止。
   - 判断准则：读者读完应能**正确调用与编排**，而非**重新实现**。
-- **载体：仅 `.Rmd`**。学习稿就是这份 `.Rmd`——逐块可测，并**导出 PDF / HTML 供学习**（这是它的主要用途）。`echo=TRUE`（代码即教学内容）；默认 `eval=FALSE`，模拟数据即可。**重清楚，不重排版**。
+- **🔴 数据来源（铁律 / 全局项目点）**：学习稿的**实质示例必须使用官方源的真实数据**——即该包**官方 vignette 所用的真实数据集 + 包自带数据**，**严禁**用自造的模拟矩阵（`matrix(rnorm/rpois(...))` 之类）冒充。
+  - 仅在演示**纯 API 机制**（如对象构造、参数签名）时可用模拟数据，且必须**照抄官方 toy 片段**并注明"官方示例数据，结果无意义"，不得自己另编一套。
+  - 各方法的官方数据落点：
+    - **AUCell** → GSE60361 小鼠脑（vignette 下载）+ 包自带 `geneSignatures.gmt` / `cellsTsne.RData` / `mouseBrain_cellLabels.tsv`
+    - **GSVA** → `GSVAdata`：`commonPickrellHuang`（Huang 微阵列 + Pickrell RNA-seq 计数）+ `c2BroadSets` / `c7.immunesigdb`
+    - **UCell** → `scRNAseq::ZilionisLungData()`（官方 vignette 数据）
+  - 价值：唯有真实数据才能展示真实分布（如 AUCell 的双峰阈值）与**效度验证**（混淆矩阵对照已知细胞类型），模拟数据"output is meaningless"。
+- **载体：仅 `.Rmd`**。学习稿就是这份 `.Rmd`——逐块可测，并**导出 PDF / HTML 供学习**（这是它的主要用途）。`echo=TRUE`（代码即教学内容）；默认 `eval=FALSE`（展示真实官方代码，不强制联网跑）。**重清楚，不重排版**。
 - **不需要平行的 `.R` 学习副本**。`.R` 文件在本项目里一律是**测试/运行脚本**（如 Type B 的 `run_*.R`、冒烟测试），不是学习文档。学习只认 `.Rmd` → PDF/HTML。
 - 结构：函数签名 → 逐参数 → 调用/分发流程（图或表）→ 返回值结构 → 最小可跑示例 → 速查表。
-- 模板参照：`workflows/AUCell/AUCell_完整学习手册.Rmd`（其 Ch1 的积分推导略低于天花板，可降级为附录/选读，不作为后续标准）。
-  - 注：`workflows/AUCell/AUCell_完整学习手册.R` 是按旧规范产出的学习副本，**现已冗余**（按本条 `.R` 不再作学习载体），保留无害，可在后续清理中删除。
+- **模板参照：`workflows/AUCell/AUCell_完整学习手册.Rmd`**（已按上述铁律重写：全程 GSE60361 官方数据、积分推导降为附录、无 `.R` 副本）。后续方法照此标杆。
 
 ### 类型 B —— 报告稿（Report / Publication）
 **目的**：对外展示级产出——组会、论文附录、科研报告。**美观、科研风格、LaTeX 排版、可视化丰富**。
@@ -202,11 +208,11 @@ data.frame(
 
 | 方法 | 类型A 学习稿 | 类型B 报告稿 | 分支 | 备注 |
 |------|:---:|:---:|------|------|
-| AUCell | ✅ 已完成 | ⬜ 待做 | `claude-aucell`(已合并) | 学习稿 10 章已在 main；Ch1 积分推导略超天花板，可降级为附录 |
+| AUCell | ✅ 官方数据版 | ⬜ 待做 | `claude-aucell-rewrite`(PR#3) | 已按数据铁律重写为 GSE60361 真实数据；旧模拟版被替换 |
 | UCell | ⬜ 待做 | 🟡 雏形 | `claude-ucell` | Zilionis 文档已在 main，需按 §4 升级到"美观报告"档 |
-| GSVA | 🚧 进行中 | ⬜ | `claude-gsva` | 只做 `gsva`+`ssgsea` 两 method；ssGSEA 即 GSVA 包内 method，见 §1 |
+| GSVA | ⚠️ 需重写 | ⬜ | `claude-gsva`(已合并) | 现 main 上是**模拟数据版**，违反数据铁律；待用 `GSVAdata`(Pickrell/Huang + c2BroadSets) 重写 |
 
-**优先级**：先补齐 AUCell↔UCell 的对称缺口（AUCell 加报告稿、UCell 加学习稿并把现有文档升级到报告档），再启动第三方法。
+**优先级**：① GSVA 学习稿按数据铁律用 `GSVAdata` 重写（与 AUCell 对齐）；② 补 AUCell↔UCell 对称缺口（AUCell 加报告稿、UCell 加学习稿）；③ 各方法报告稿。
 
 **待用户决策**（阻塞项）：
 1. ~~第三个方法是 GSVA 还是 ssGSEA~~ → **已定 = GSVA 包，只做 `gsva`+`ssgsea` 两 method**（见 §1）。
