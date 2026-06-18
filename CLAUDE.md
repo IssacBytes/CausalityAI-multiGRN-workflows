@@ -108,11 +108,35 @@ output:
 - 随机性必须 `set.seed()` 固定并注明原因。
 
 ### 报告稿专属（类型 B 才需要）
-- **代码可见性**：全局 `echo=FALSE, message=FALSE, warning=FALSE`；正文不出现裸代码，计算过程收进末尾附录。
-- **可视化**：统一用 `ggplot2` + 共享主题（`theme_multigrn()` 放 `styles/`，定义字体/配色/留白）；离散配色与连续色阶各定一套，全项目复用；每张图 `fig.cap=` 必填，自动编号。
-- **表格**：用 `knitr::kable()` + `kableExtra`（PDF 走 `booktabs`），不贴原始 `print()`。
-- **LaTeX 排版**：共享 preamble 放 `styles/`（如 `multigrn_preamble.tex`），经 YAML `includes: in_header:` 引入；统一中文字体（`xelatex` + `Noto Serif CJK` / `PingFang` / `SimSun` 之一，按可用性回退）；启用 `toc`、图表编号、`booktabs`。
-- **图片质量**：`dpi=300`，矢量优先（PDF 输出图用 PDF/SVG 设备），`fig.align="center"`。
+
+**代码占比 —— 原则：展示旋钮，隐藏接线（show the knobs, hide the wiring）**
+- 全局 `echo=FALSE, message=FALSE, warning=FALSE`。
+- **正文裸代码 ≤ 全文篇幅约 10%，且只能是"决策性代码"**：即定义方法本身的核心函数调用 + 确切参数值（1–5 行，放进「方法/参数」标注框）。例：`AUCell_calcAUC(geneSets, rankings, aucMaxRank = 1500, normAUC = TRUE)`。
+- 其余全部隐藏：数据读取、reshape、绘图代码、阈值循环=「接线」，藏掉或收进末尾**附录/复现章节**；完整可跑代码交给配套 `run_*.R`。
+- 版面由 **图 > 表 > 文字解读** 主导，代码是配角。这是上限不是目标——能压到只剩参数行更好。
+- 理由：读者要的是"做了什么、发现了什么"，可复现性靠①正文写清参数 + ②附可跑脚本来保证，而非把代码塞进叙述。
+
+**可视化 —— 按"回答什么问题"选图（哪种合适用哪种）**
+
+| 图类型 | 回答的问题 | 何时用 | 实现 |
+|--------|-----------|--------|------|
+| 密度/直方/山脊图 | 单签名打分分布、是否双峰、阈值依据 | 阈值类方法必备；多签名并列用 ridgeline | `ggridges` |
+| 降维特征图(UMAP/t-SNE，连续渐变) | 活性空间分布 | 单细胞头号必备 | ggplot+viridis |
+| 二值/分配图(embedding) | 哪些细胞过阈值 | 做了细胞分配时 | ggplot 两色 |
+| RGB 叠加(2–3 签名) | 多签名共定位 | 可选 | `plotEmb_rgb` |
+| 小提琴/箱线(按细胞类型分组) | 效度验证：签名是否在预期型里高 | 必备验证图 | ggplot violin |
+| 聚类热图(细胞×签名，标准化+注释条) | 全局结构、签名共现 | 签名多时 | `ComplexHeatmap` |
+| 跨方法散点+Spearman/相关热图 | 三方法是否一致 | 对比报告 payoff 图 | ggplot+`ggpubr` |
+
+- **两张工作马**：降维特征图 + 按细胞类型的小提琴图，几乎每份报告都该有。
+- **审美红线**：连续量用 **viridis**（感知均匀、色盲友好），分类用固定定性色板；**禁用** 3D、双 Y 轴、饼图、jet/rainbow 色阶、无 alpha 的过度重叠散点（重叠改 `alpha` 或 `geom_hex`）。
+- 统一 `ggplot2` + 共享主题 `theme_multigrn()`（放 `styles/`，定义字体/配色/留白）；每张图 `fig.cap=` 必填、自动编号。
+
+**表格**：`knitr::kable()` + `kableExtra`（PDF 走 `booktabs`），不贴原始 `print()`。
+
+**LaTeX 排版**：共享 preamble 放 `styles/`（如 `multigrn_preamble.tex`），经 YAML `includes: in_header:` 引入；统一中文字体（`xelatex` + `Noto Serif CJK` / `PingFang` / `SimSun` 按可用性回退）；启用 `toc`、图表编号、`booktabs`。
+
+**图片质量**：`dpi=300`，矢量优先（PDF 图用 PDF/SVG 设备），`fig.align="center"`。
 
 ---
 
