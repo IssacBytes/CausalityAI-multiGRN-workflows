@@ -13,10 +13,9 @@ Barbie et al., 2009, *Nature* (ssGSEA).
 
 ## Files
 
-- `GSVA_学习手册.Rmd` — 类型 A 学习稿（中英对照标题 + 中文正文 + 代码注释）。
+- `GSVA_学习手册.Rmd` — 类型 A 学习稿，**唯一学习载体**（中英对照标题 + 中文正文 + 代码注释）。
   源码级讲解 `gsva` 与 `ssgsea` 的全部参数、param-object API、调用调度流程，
-  含端到端示例与速查表。可渲染 HTML / PDF（xelatex），可逐块测试。
-- `GSVA_学习手册.R` — 同内容的纯脚本版，便于逐行 step。
+  含端到端示例与速查表。**导出 HTML / PDF（xelatex）供学习**，亦可逐块测试。
 
 ## Chapters
 
