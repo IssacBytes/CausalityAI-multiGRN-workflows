@@ -1,0 +1,9 @@
+﻿[submodule "AUCell"]
+	path = AUCell
+	url = https://github.com/aertslab/AUCell.git
+[submodule "UCell"]
+	path = UCell
+	url = https://github.com/carmonalab/UCell.git
+[submodule "ssGSEA-gpmodule"]
+	path = ssGSEA-gpmodule
+	url = https://github.com/GSEA-MSigDB/ssGSEA-gpmodule.git

@@ -1,0 +1,23 @@
+﻿# Local R libraries and dependency caches
+r-lib/
+tools/
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# Downloaded datasets and generated analysis outputs
+data/
+results/
+
+# Rendered documents and generated figure folders
+*.html
+*.pdf
+*.tex
+*.log
+*_files/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+desktop.ini

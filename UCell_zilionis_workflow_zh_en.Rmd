@@ -1,0 +1,542 @@
+﻿---
+title: "UCell 官方完整数据 Workflow / Official Full Data Workflow"
+lang: "zh-CN"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: '3'
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: null
+    css: styles/ucell_pdf.css
+---
+
+## 0. 目标 / Goal
+
+本文件使用 UCell 官方 vignette 中的 `scRNAseq::ZilionisLungData()` 数据，走一遍不含 Seurat 的完整 UCell workflow。
+This notebook uses the official UCell vignette data source, `scRNAseq::ZilionisLungData()`, and runs the full non-Seurat UCell workflow.
+
+本轮覆盖 / Covered here:
+
+- 官方 Zilionis lung cancer single-cell 数据下载与缓存。Download and cache the official Zilionis lung cancer single-cell data.
+- 筛选 immune cells，并取前 5000 cells。Filter immune cells and use the first 5000 cells.
+- Matrix workflow: `ScoreSignatures_UCell()`.
+- 参数学习：`maxRank`、`w_neg`、`missing_genes`、`chunk.size`。Parameter exploration.
+- rank 缓存：`StoreRankings_UCell()` + `precalc.ranks`。Precomputed rank workflow.
+- `SingleCellExperiment` workflow。
+
+不包含 / Not covered:
+
+- Seurat workflow.
+- `SmoothKNN()` 实跑。
+
+## 1. Setup
+
+```{r setup}
+.libPaths(c("F:/WorkSpace/Causality+AI-multiGRN/r-lib", .libPaths()))
+
+library(UCell)
+library(BiocParallel)
+library(scRNAseq)
+library(SingleCellExperiment)
+library(SummarizedExperiment)
+library(Matrix)
+library(ggplot2)
+
+set.seed(123)
+BPPARAM <- SnowParam(workers = 1)
+
+dir.create("data", showWarnings = FALSE)
+dir.create("results", showWarnings = FALSE)
+
+cache_file <- "data/ucell_zilionis_immune_5000.rds"
+```
+
+说明 / Notes:
+
+- 本项目 Windows 环境使用 `SnowParam(workers = 1)`。This Windows project uses `SnowParam(workers = 1)`.
+- 下载后的处理数据会保存到 `data/ucell_zilionis_immune_5000.rds`。Processed data will be cached as an RDS file.
+
+## 2. Helper Functions
+
+这些函数只负责整理表格和缓存数据，不改变 UCell 算法。
+These helper functions only organize tables and cache data. They do not modify the UCell algorithm.
+
+```{r helpers}
+make_long_scores <- function(score_matrix) {
+  data.frame(
+    cell = rep(rownames(score_matrix), times = ncol(score_matrix)),
+    signature = rep(colnames(score_matrix), each = nrow(score_matrix)),
+    score = as.numeric(as.matrix(score_matrix)),
+    row.names = NULL
+  )
+}
+
+make_gene_overlap <- function(signatures, expr_mat) {
+  rows <- lapply(names(signatures), function(signature_name) {
+    genes <- signatures[[signature_name]]
+    clean_genes <- sub("[+-]$", "", genes)
+    data.frame(
+      signature = signature_name,
+      gene = genes,
+      clean_gene = clean_genes,
+      direction = ifelse(grepl("-$", genes), "negative", "positive"),
+      present_in_matrix = clean_genes %in% rownames(expr_mat),
+      row.names = NULL
+    )
+  })
+  do.call(rbind, rows)
+}
+```
+
+## 3. 下载或读取缓存数据 / Download or Read Cached Data
+
+第一次运行会下载官方数据；之后会直接读取本地缓存。
+The first run downloads the official data. Later runs read the local cache.
+
+```{r load-or-cache-data}
+if (file.exists(cache_file)) {
+  message("Reading cached data: ", cache_file)
+  cached <- readRDS(cache_file)
+} else {
+  message("Downloading ZilionisLungData() through scRNAseq...")
+  lung <- scRNAseq::ZilionisLungData()
+
+  immune <- lung$Used & lung$used_in_NSCLC_immune
+  lung <- lung[, immune]
+  lung <- lung[, seq_len(min(5000, ncol(lung)))]
+
+  assay_name <- if ("counts" %in% assayNames(lung)) {
+    "counts"
+  } else {
+    assayNames(lung)[1]
+  }
+
+  exp.mat <- Matrix::Matrix(assay(lung, assay_name), sparse = TRUE)
+  colnames(exp.mat) <- paste0(colnames(exp.mat), seq_len(ncol(exp.mat)))
+
+  cached <- list(
+    exp.mat = exp.mat,
+    colData = as.data.frame(colData(lung)),
+    assay_name = assay_name,
+    source = "scRNAseq::ZilionisLungData; immune cells; first 5000 cells"
+  )
+
+  saveRDS(cached, cache_file)
+}
+
+exp.mat <- cached$exp.mat
+
+class(exp.mat)
+dim(exp.mat)
+cached$assay_name
+```
+
+检查 / Checks:
+
+```{r data-checks}
+stopifnot(inherits(exp.mat, "dgCMatrix"))
+stopifnot(ncol(exp.mat) <= 5000)
+
+head(rownames(exp.mat))
+head(colnames(exp.mat))
+summary(Matrix::colSums(exp.mat > 0))
+```
+
+解释 / Interpretation:
+
+- `exp.mat` 是 genes x cells。`exp.mat` is genes x cells.
+- 这是 UCell matrix workflow 的标准输入方向。This is the standard input orientation for UCell.
+- `Matrix::colSums(exp.mat > 0)` 表示每个 cell 检测到的基因数。This shows detected genes per cell.
+
+## 4. 官方 Signatures / Official Signatures
+
+这些 signatures 来自 UCell 官方 vignette。
+These signatures are from the official UCell vignette.
+
+```{r official-signatures}
+signatures <- list(
+  Tcell = c("CD3D", "CD3E", "CD3G", "CD2", "TRAC"),
+  Myeloid = c("CD14", "LYZ", "CSF1R", "FCER1G", "SPI1", "LCK-"),
+  NK = c("KLRD1", "NCR1", "NKG7", "CD3D-", "CD3E-"),
+  Plasma_cell = c("MZB1", "DERL3", "CD19-")
+)
+
+signatures
+```
+
+检查 signature 基因是否在矩阵里。
+Check whether signature genes are present in the matrix.
+
+```{r gene-overlap}
+gene_overlap <- make_gene_overlap(signatures, exp.mat)
+gene_overlap
+
+write.csv(
+  gene_overlap,
+  "results/ucell_zilionis_gene_overlap.csv",
+  row.names = FALSE
+)
+```
+
+说明 / Notes:
+
+- 末尾 `-` 表示负向 marker。A trailing `-` means a negative marker.
+- 例如 `LCK-` 表示如果 LCK 高表达，会降低 Myeloid score。For example, `LCK-` penalizes the Myeloid score if LCK is high.
+
+## 5. Matrix Workflow: `ScoreSignatures_UCell()`
+
+这是最核心的官方调用。
+This is the core official function call.
+
+```{r score-matrix}
+ucell_scores <- ScoreSignatures_UCell(
+  exp.mat,
+  features = signatures,
+  BPPARAM = BPPARAM
+)
+
+head(ucell_scores)
+dim(ucell_scores)
+summary(ucell_scores)
+```
+
+结果方向 / Output orientation:
+
+- 行是 cell。Rows are cells.
+- 列是 signature。Columns are signatures.
+- 列名自动添加 `_UCell`。Column names automatically get the `_UCell` suffix.
+
+```{r save-scores}
+write.csv(ucell_scores, "results/ucell_zilionis_scores.csv")
+saveRDS(ucell_scores, "results/ucell_zilionis_scores.rds")
+
+ucell_scores_long <- make_long_scores(ucell_scores)
+write.csv(
+  ucell_scores_long,
+  "results/ucell_zilionis_scores_long.csv",
+  row.names = FALSE
+)
+
+head(ucell_scores_long)
+```
+
+## 6. Score Distribution
+
+```{r plot-distribution}
+ggplot(ucell_scores_long, aes(x = signature, y = score, fill = signature)) +
+  geom_violin(scale = "width", alpha = 0.75) +
+  geom_boxplot(width = 0.12, outlier.size = 0.4, alpha = 0.85) +
+  theme_bw(base_size = 12) +
+  labs(
+    title = "UCell score distributions on Zilionis immune cells",
+    x = "Signature",
+    y = "UCell score"
+  ) +
+  theme(legend.position = "none")
+```
+
+解释 / Interpretation:
+
+- violin 显示每个 signature 在 5000 个 immune cells 中的分布。The violin plot shows score distributions across 5000 immune cells.
+- boxplot 显示中位数和四分位数。The boxplot shows median and quartiles.
+
+## 7. `maxRank` 参数比较 / Compare `maxRank`
+
+`maxRank` 控制 UCell 排名截断。
+`maxRank` controls the rank cutoff.
+
+```{r compare-maxrank}
+scores_800 <- ScoreSignatures_UCell(
+  exp.mat,
+  features = signatures,
+  maxRank = 800,
+  BPPARAM = BPPARAM
+)
+
+scores_1500 <- ScoreSignatures_UCell(
+  exp.mat,
+  features = signatures,
+  maxRank = 1500,
+  BPPARAM = BPPARAM
+)
+
+scores_3000 <- ScoreSignatures_UCell(
+  exp.mat,
+  features = signatures,
+  maxRank = 3000,
+  BPPARAM = BPPARAM
+)
+
+compare_maxrank <- data.frame(
+  cell = rownames(scores_1500),
+  Tcell_800 = as.numeric(scores_800[, "Tcell_UCell"]),
+  Tcell_1500 = as.numeric(scores_1500[, "Tcell_UCell"]),
+  Tcell_3000 = as.numeric(scores_3000[, "Tcell_UCell"]),
+  row.names = NULL
+)
+
+head(compare_maxrank)
+write.csv(
+  compare_maxrank,
+  "results/ucell_zilionis_compare_maxRank.csv",
+  row.names = FALSE
+)
+```
+
+```{r plot-maxrank}
+ggplot(compare_maxrank, aes(x = Tcell_1500, y = Tcell_800)) +
+  geom_point(size = 0.7, alpha = 0.45) +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  theme_bw(base_size = 12) +
+  labs(
+    title = "Tcell score: maxRank 1500 vs 800",
+    x = "maxRank = 1500",
+    y = "maxRank = 800"
+  )
+
+cor(compare_maxrank$Tcell_1500, compare_maxrank$Tcell_800)
+```
+
+## 8. 正负基因与 `w_neg` / Positive-Negative Signatures and `w_neg`
+
+这里使用官方 `Myeloid` signature，其中 `LCK-` 是负向 marker。
+Here we use the official `Myeloid` signature, where `LCK-` is a negative marker.
+
+```{r compare-wneg}
+myeloid_signature <- list(
+  Myeloid = c("CD14", "LYZ", "CSF1R", "FCER1G", "SPI1", "LCK-")
+)
+
+myeloid_w1 <- ScoreSignatures_UCell(
+  exp.mat,
+  features = myeloid_signature,
+  w_neg = 1,
+  BPPARAM = BPPARAM
+)
+
+myeloid_w05 <- ScoreSignatures_UCell(
+  exp.mat,
+  features = myeloid_signature,
+  w_neg = 0.5,
+  BPPARAM = BPPARAM
+)
+
+compare_wneg <- data.frame(
+  cell = rownames(myeloid_w1),
+  w_neg_1 = as.numeric(myeloid_w1[, "Myeloid_UCell"]),
+  w_neg_0.5 = as.numeric(myeloid_w05[, "Myeloid_UCell"]),
+  LCK_expr = as.numeric(exp.mat["LCK", ]),
+  row.names = NULL
+)
+
+head(compare_wneg)
+summary(compare_wneg$w_neg_0.5 - compare_wneg$w_neg_1)
+```
+
+```{r plot-wneg}
+ggplot(compare_wneg, aes(x = w_neg_1, y = w_neg_0.5, color = LCK_expr)) +
+  geom_point(size = 0.7, alpha = 0.55) +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  theme_bw(base_size = 12) +
+  labs(
+    title = "Effect of w_neg on Myeloid score",
+    x = "w_neg = 1",
+    y = "w_neg = 0.5",
+    color = "LCK expression"
+  )
+```
+
+解释 / Interpretation:
+
+- `w_neg = 1` 表示负向 marker 全权重惩罚。`w_neg = 1` uses full penalty for negative markers.
+- `w_neg = 0.5` 表示负向惩罚减半。`w_neg = 0.5` halves the negative penalty.
+
+## 9. 缺失基因处理 / Missing Genes
+
+```{r missing-genes}
+missing_signature <- list(
+  Tcell_missing = c("CD3D", "CD3E", "CD2", "not_a_gene")
+)
+
+scores_impute <- ScoreSignatures_UCell(
+  exp.mat,
+  features = missing_signature,
+  missing_genes = "impute",
+  BPPARAM = BPPARAM
+)
+
+scores_skip <- ScoreSignatures_UCell(
+  exp.mat,
+  features = missing_signature,
+  missing_genes = "skip",
+  BPPARAM = BPPARAM
+)
+
+compare_missing <- data.frame(
+  cell = rownames(scores_impute),
+  impute = as.numeric(scores_impute[, "Tcell_missing_UCell"]),
+  skip = as.numeric(scores_skip[, "Tcell_missing_UCell"]),
+  row.names = NULL
+)
+
+head(compare_missing)
+summary(compare_missing$skip - compare_missing$impute)
+```
+
+## 10. `chunk.size`
+
+`chunk.size` 影响内存和速度，不应影响结果。
+`chunk.size` affects memory and runtime, not the scores.
+
+```{r chunk-size}
+scores_chunk_100 <- ScoreSignatures_UCell(
+  exp.mat,
+  features = signatures,
+  chunk.size = 100,
+  BPPARAM = BPPARAM
+)
+
+scores_chunk_500 <- ScoreSignatures_UCell(
+  exp.mat,
+  features = signatures,
+  chunk.size = 500,
+  BPPARAM = BPPARAM
+)
+
+all.equal(scores_chunk_100, scores_chunk_500)
+```
+
+## 11. 预计算 Rank / Precompute Ranks
+
+如果要反复测试多个 signatures，先保存 ranks 会更高效。
+If you repeatedly test many signatures, precomputing ranks is more efficient.
+
+```{r store-ranks}
+ranks <- StoreRankings_UCell(
+  exp.mat,
+  maxRank = 1500,
+  BPPARAM = BPPARAM
+)
+
+class(ranks)
+dim(ranks)
+ranks[1:5, 1:5]
+
+saveRDS(ranks, "results/ucell_zilionis_ranks.rds")
+```
+
+用预计算 ranks 重新打分。
+Rescore using precomputed ranks.
+
+```{r score-from-ranks}
+scores_from_ranks <- ScoreSignatures_UCell(
+  features = signatures,
+  precalc.ranks = ranks,
+  BPPARAM = BPPARAM
+)
+
+head(scores_from_ranks)
+write.csv(
+  scores_from_ranks,
+  "results/ucell_zilionis_scores_from_ranks.csv"
+)
+```
+
+比较直接打分与 ranks 打分。
+Compare direct scoring and precomputed-rank scoring.
+
+```{r compare-direct-ranks}
+max_abs_delta <- max(abs(as.matrix(ucell_scores) - as.matrix(scores_from_ranks)))
+max_abs_delta
+```
+
+新增 signatures，不需要重新计算 ranks。
+Score new signatures without recomputing ranks.
+
+```{r new-signatures}
+new.signatures <- list(
+  Lymphoid = c("LCK"),
+  CD3_module = c("CD3D", "CD3E", "CD3G")
+)
+
+scores_new <- ScoreSignatures_UCell(
+  features = new.signatures,
+  precalc.ranks = ranks,
+  BPPARAM = BPPARAM
+)
+
+head(scores_new)
+```
+
+## 12. SingleCellExperiment Workflow
+
+UCell 可以直接对 `SingleCellExperiment` 对象打分。
+UCell can directly score a `SingleCellExperiment` object.
+
+```{r sce-workflow}
+sce <- SingleCellExperiment(list(counts = exp.mat))
+
+sce <- ScoreSignatures_UCell(
+  sce,
+  features = signatures,
+  assay = "counts",
+  BPPARAM = BPPARAM
+)
+
+altExpNames(sce)
+stopifnot("UCell" %in% altExpNames(sce))
+
+sce_scores <- assay(altExp(sce, "UCell"), "UCell")
+sce_scores[1:4, 1:5]
+
+saveRDS(sce, "results/ucell_zilionis_sce_with_scores.rds")
+```
+
+解释 / Interpretation:
+
+- matrix 输入会直接返回 score matrix。Matrix input returns a score matrix.
+- SCE 输入会返回原 SCE，并把结果放到 `altExp(sce, "UCell")`。SCE input returns the SCE object with scores in `altExp(sce, "UCell")`.
+
+## 13. Workflow Summary
+
+```{r workflow-summary}
+summary_table <- data.frame(
+  metric = c(
+    "n_genes",
+    "n_cells",
+    "n_signatures",
+    "max_abs_delta_direct_vs_precalc_ranks",
+    "sce_has_ucell_altExp"
+  ),
+  value = c(
+    nrow(exp.mat),
+    ncol(exp.mat),
+    length(signatures),
+    max_abs_delta,
+    "UCell" %in% altExpNames(sce)
+  )
+)
+
+summary_table
+write.csv(
+  summary_table,
+  "results/ucell_zilionis_workflow_summary.csv",
+  row.names = FALSE
+)
+```
+
+## 14. 关键结论 / Key Takeaways
+
+- UCell 官方 matrix 输入是 genes x cells。Official matrix input is genes x cells.
+- `ScoreSignatures_UCell()` 是核心打分函数。`ScoreSignatures_UCell()` is the core scoring function.
+- 官方 Zilionis workflow 可先筛选 immune cells 并取 5000 cells 学习流程。The official Zilionis workflow can be learned on 5000 immune cells first.
+- `StoreRankings_UCell()` 适合反复测试多个 signatures。`StoreRankings_UCell()` is useful when testing many signatures repeatedly.
+- `SingleCellExperiment` 输入会把分数写入 `altExp(sce, "UCell")`。For SCE input, scores are stored in `altExp(sce, "UCell")`.
+
+## 15. Session Info
+
+```{r session-info}
+sessionInfo()
+```
