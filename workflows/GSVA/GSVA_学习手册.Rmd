@@ -1,0 +1,682 @@
+---
+title: "GSVA 完整学习手册"
+subtitle: "源码级参数解析与调用流程 | 聚焦 gsva 与 ssgsea 两个 method | 基于 GSVA v2.x"
+author: "参考源码：Causality+AI+mulitiGRN/GSVA/R/"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    number_sections: true
+    df_print: paged
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    latex_engine: xelatex
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo      = TRUE,      # 学习稿：代码即教学内容，始终显示
+  eval      = FALSE,     # 默认不运行（安装 GSVA 后改为 TRUE 可逐块跑）
+  warning   = FALSE,
+  message   = FALSE,
+  comment   = "#>",
+  fig.width = 8,
+  fig.height = 5
+)
+```
+
+> **使用说明**
+>
+> - **范围**：GSVA 包实现四种方法（gsva / ssgsea / plage / zscore），本手册**只讲 `gsva` 与 `ssgsea`**（通路分数最常用的两个）。
+> - **深度**：讲透参数语义 + 函数调度流程，算法只到"直觉 + 输入输出契约"层面，不深入数值内核。
+> - **逐块测试**：RStudio 中 `Ctrl+Shift+Enter` 运行当前块；安装 GSVA 后把全局 `eval=FALSE` 改 `TRUE`。
+> - **参考文献**：Hänzelmann et al., 2013 (GSVA)；Barbie et al., 2009 (ssGSEA)。
+
+---
+
+# Chapter 0：依赖与安装 / Dependencies {#ch0}
+
+> 源文件：`GSVA/DESCRIPTION`、`GSVA/NAMESPACE`
+
+## 依赖说明
+
+| 类别 | 包 | 用途 |
+|------|----|------|
+| 核心 | `GSEABase` | GeneSet / GeneSetCollection 与基因 ID 类型映射 |
+| | `SummarizedExperiment` / `SingleCellExperiment` | 表达数据容器 |
+| | `Matrix` / `DelayedArray` / `HDF5Array` | 稀疏矩阵、延迟计算、超大数据落盘（`ondisk`）|
+| | `BiocParallel` | 并行后端（`BPPARAM`）|
+| | `sparseMatrixStats` / `DelayedMatrixStats` | 矩阵统计 |
+| | `cli` | 进度信息 |
+| 可选 | `GSVAdata` | 教程示例数据 |
+
+## 安装
+
+```{r install}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+
+BiocManager::install("GSVA")
+
+# 可选：教程数据 + 单细胞容器
+BiocManager::install(c("GSVAdata", "SingleCellExperiment"))
+```
+
+```{r load-libs}
+library(GSVA)
+library(GSEABase)
+library(SummarizedExperiment)
+library(Matrix)
+library(BiocParallel)
+```
+
+---
+
+# Chapter 1：GSVA 与 ssGSEA 算法直觉 / Intuition {#ch1}
+
+> 源文件：`GSVA/R/gsva.R`、`GSVA/R/ssgsea.R`、`GSVA/R/AllClasses.R`
+
+## 核心问题
+
+> 给定一个样本（bulk 样本或单个细胞）和一个基因集（通路），这个**通路在该样本中整体上调还是下调**？输出一个连续的「富集分数 / 通路活性分数」。
+
+GSVA 与 ssGSEA 都属于 **single-sample 富集打分**：不需要分组、不需要对照，逐样本独立给分。
+
+## 两种方法的算法直觉
+
+### GSVA（Hänzelmann et al., 2013）
+三步（源码 `gsva.R` 中 `gsva(gsvaParam)` 依次调用）：
+
+1. **行归一化（`gsvaRowNorm`）**：对每个基因，跨样本估计其表达的**经验累积分布（ECDF）**，把原始表达值转成"该基因在样本群体中的相对表达水平"。
+   - 用核函数估计 ECDF —— 这就是参数 `kcdf` 的作用（见 Ch4）。
+2. **列排名（`gsvaColRanks`）**：在每个样本内，把所有基因按上一步的归一化值排名。
+3. **列打分（`gsvaColScores`）**：对每个基因集，沿样本内排名做 **KS（Kolmogorov-Smirnov）随机游走**，用游走的偏离量算出富集分数（ES）。
+   - 游走尾部权重 = 参数 `tau`；ES 的取法（最大偏离 vs 正负偏离之差）= 参数 `maxDiff` / `absRanking`（见 Ch4）。
+
+**特点**：GSVA 分数是**相对**的——一个基因的"高/低"是相对于其他样本而言。所以 **GSVA 需要一组样本一起算**（样本越多，ECDF 估计越稳）。分数可正可负，0 附近代表通路在该样本中不特别上调也不下调。
+
+### ssGSEA（Barbie et al., 2009）
+单步核函数（源码 `ssgsea.R` 调用 `ssgsea()`）：
+
+- 在**每个样本内部**，把基因按表达值排名，对基因集沿排名做加权随机游走，累加得到富集分数。
+- 游走尾部权重 = 参数 `alpha`（默认 0.25）；可选最后对分数做归一化 = 参数 `normalize`（见 Ch5）。
+
+**特点**：ssGSEA **逐样本完全独立**（不依赖样本群体分布），单个样本也能算。这点与 AUCell/UCell 类似，但统计量不同。
+
+## 与本项目其他方法的区别
+
+| 方法 | 统计量 | 是否依赖样本群体 | 分数语义 |
+|------|--------|:---:|---------|
+| **GSVA** | KS 随机游走 + 跨样本 ECDF | **是**（需一组样本）| 相对富集，可正可负 |
+| **ssGSEA** | 加权随机游走（样本内）| 否（逐样本独立）| 富集分数，可归一化 |
+| AUCell | 排名前 X% 的 AUC | 否 | 0–1 活性 |
+| UCell | Mann-Whitney U | 否 | 0–1 活性 |
+
+> ⚠️ **可比性提醒**：四种分数尺度与语义都不同，跨方法对比时必须按方法内分布标准化后再比，且不能把数值直接等同（见 `CLAUDE.md` §7）。
+
+---
+
+# Chapter 2：param-object API 范式 / The parameter-object API {#ch2}
+
+> 源文件：`GSVA/R/AllGenerics.R`、`GSVA/R/GsvaMethodParam.R`、各 method 的 `*.R`
+
+## GSVA v2.x 的核心范式
+
+GSVA 现代 API（v2.x）**不再**用 `gsva(expr, geneSets, method=...)` 这种一把梭的调用，而是**两步**：
+
+```{r api-paradigm, eval=TRUE}
+# 第 1 步：构造一个"参数对象"，方法身份由对象类型决定
+#   gsvaParam()   → GSVA 方法
+#   ssgseaParam() → ssGSEA 方法
+#   plageParam() / zscoreParam() → 本项目不用
+#
+# 第 2 步：把参数对象交给统一入口 gsva() 运行
+#
+# 即：gsva( <方法>Param(数据, 基因集, ...) )
+
+cat("范式：gsva(gsvaParam(X, gs, ...))  或  gsva(ssgseaParam(X, gs, ...))\n")
+```
+
+## 为什么改成参数对象？
+
+- **方法 = 类型**：`gsva()` 用 S4 方法分发，根据传入对象是 `gsvaParam` 还是 `ssgseaParam` 自动选择算法（源码 `gsva.R:145` 与 `ssgsea.R:13` 各自的 `setMethod`）。
+- **参数自校验**：构造 `gsvaParam(...)` 时就会校验输入（如 `.check_input_expr_gene_sets`），错误尽早暴露。
+- **可序列化复用**：参数对象可保存、传递、复用，利于可复现流程。
+
+## 最小调用骨架
+
+```{r api-skeleton}
+# 数据：X = 表达矩阵（基因 × 样本/细胞）；gs = 基因集列表
+gsvaPar <- gsvaParam(X, gs)            # 构造 GSVA 参数对象（全用默认值）
+gsva.es <- gsva(gsvaPar, verbose = FALSE)   # 运行，返回富集分数矩阵
+
+# ssGSEA 同理，只换参数对象构造器
+ssgseaPar <- ssgseaParam(X, gs)
+ssgsea.es <- gsva(ssgseaPar, verbose = FALSE)
+```
+
+## `gsva()` 入口的通用运行参数
+
+无论哪个 method，`gsva()` 本身接受这几个运行期参数（与"方法参数"区分开）：
+
+```{r gsva-run-args, eval=TRUE}
+# gsva(param, verbose = TRUE, BPPARAM = SerialParam(), maxmem = "auto")
+#
+#   param    ★ 参数对象（gsvaParam / ssgseaParam），决定用哪种算法
+#   verbose    是否打印进度（cli 信息）
+#   BPPARAM    并行后端；默认串行 SerialParam()
+#              多核：MulticoreParam(n)（Mac/Linux）/ SnowParam(n)（Windows）
+#   maxmem     内存上界，"auto" 时自动决定是否走 ondisk（HDF5 落盘）
+cat("gsva() 运行参数：param / verbose / BPPARAM / maxmem\n")
+```
+
+> 区分清楚两类参数：**方法参数**（`kcdf`/`tau`/`alpha` 等）写在 `gsvaParam()`/`ssgseaParam()` 构造器里；**运行参数**（`BPPARAM`/`verbose`/`maxmem`）写在 `gsva()` 调用里。
+
+---
+
+# Chapter 3：数据输入与 kcdf 匹配 / Input & kcdf matching {#ch3}
+
+> 源文件：`GSVA/R/AllClasses.R`（`GsvaExprData` / `GsvaGeneSets`）、`gsva.R` 参数文档
+
+## 支持的表达数据类型（`exprData`）
+
+| 类型 | 说明 |
+|------|------|
+| `matrix` | 普通密集矩阵，行 = 基因，列 = 样本/细胞 |
+| `dgCMatrix` | 稀疏矩阵（单细胞推荐）；可触发 `sparse=TRUE` 的稀疏算法 |
+| `ExpressionSet` | Biobase 旧式容器（微阵列常见）|
+| `SummarizedExperiment` | 现代 bulk 容器；多 assay 时用 `assay=` 指定 |
+| `SingleCellExperiment` | 单细胞容器；默认优先用名为 `logcounts` 的 assay |
+| `HDF5Matrix` / `DelayedMatrix` | 超大数据落盘计算（配合 `ondisk`）|
+
+```{r input-data}
+# 行 = 基因（行名必须是基因 ID），列 = 样本/细胞（列名必须是样本 ID）
+set.seed(42)
+X <- matrix(rnorm(200 * 30), nrow = 200, ncol = 30,
+            dimnames = list(paste0("Gene", 1:200), paste0("Sample", 1:30)))
+
+# 稀疏 / SE / SCE 也可直接传入；多 assay 时：
+# gsvaParam(se, gs, assay = "logcounts")
+```
+
+## 支持的基因集类型（`geneSets`）
+
+```{r input-genesets}
+# 方式 A：命名列表（最常用）
+gs <- list(
+  Pathway_A = paste0("Gene", 1:20),
+  Pathway_B = paste0("Gene", 15:40),
+  Pathway_C = paste0("Gene", 50:75)
+)
+
+# 方式 B：GSEABase GeneSetCollection（如 getGmt 读入的 .gmt）
+# gs <- getGmt("pathways.gmt")
+
+# 基因 ID 必须与表达矩阵行名同一套；不一致时用 annotation= 做映射，
+# 或先自行转换（GSVA 也可借 GeneIdentifierType 自动映射）。
+```
+
+## ★ kcdf 与数据类型的匹配（GSVA 方法特有的关键决策）
+
+GSVA 方法第一步要估计每个基因的跨样本经验分布（ECDF），**用哪种核取决于你的数据是什么尺度**。选错会系统性偏差：
+
+| 数据类型 | `kcdf` 取值 | 说明 |
+|---------|-----------|------|
+| 连续值（log-CPM/TPM/RPKM、微阵列 log 荧光）| `"Gaussian"` | 高斯核，适合连续表达 |
+| 整数原始计数（RNA-seq raw counts）| `"Poisson"` | 泊松核，适合计数 |
+| 不想用核估计 | `"none"` | 直接经验分布（样本量大时更稳）|
+| 让 GSVA 自己判断 | `"auto"`（默认）| 按数据特征与样本量自动选；样本数 < `kcdfNoneMinSampleSize`(默认200) 时倾向用核 |
+
+```{r kcdf-decision, eval=TRUE}
+# 决策口诀：
+#   log 变换后的连续值 → "Gaussian"
+#   未变换的整数计数   → "Poisson"
+#   拿不准 / 想省心    → "auto"（默认）
+# 注意：ssGSEA 没有 kcdf 参数（它逐样本排名，不做跨样本 ECDF）。
+cat("kcdf 只属于 GSVA 方法；ssGSEA 无此参数\n")
+```
+
+---
+
+# Chapter 4：GSVA 方法 — `gsvaParam` 逐参数 {#ch4}
+
+> 源文件：`GSVA/R/gsva.R`（构造器 `gsvaParam` 在 Line 358）、`AllClasses.R`（类文档 Line 335-434）
+
+## 构造器签名
+
+```{r gsvaParam-signature, eval=TRUE}
+# gsvaParam(
+#   exprData, geneSets,                      # 数据 + 基因集（必需）
+#   assay = NA_character_, annotation = NULL,# 多 assay 选择 / 基因 ID 映射
+#   minSize = 1, maxSize = Inf,              # 基因集大小过滤
+#   kcdf = c("auto","Gaussian","Poisson","none"),  # ★ ECDF 核
+#   kcdfNoneMinSampleSize = 200,             # auto 时切到 none 的样本量阈值
+#   tau = 1,                                 # ★ 随机游走尾部权重
+#   maxDiff = TRUE,                          # ES 取法
+#   absRanking = FALSE,                      # Kuiper 统计量变体（仅 maxDiff=TRUE）
+#   sparse = TRUE,                           # 稀疏输入是否用稀疏算法
+#   checkNA = c("auto","yes","no"),          # NA 检查策略
+#   use = c("everything","all.obs","na.rm"), # NA 处理策略
+#   filterRows = TRUE,                       # 是否过滤常量行
+#   ondisk = c("auto","yes","no"),           # 是否落盘计算
+#   verbose = TRUE
+# )
+cat("gsvaParam 构造器签名已展示\n")
+```
+
+## 通用参数（与 ssGSEA 共享）
+
+```{r gsvaParam-common, eval=TRUE}
+# exprData ★  表达数据（见 Ch3 支持的类型）
+# geneSets ★  基因集（列表 / GeneSetCollection）
+#
+# assay        多 assay 容器里用哪个 assay；默认优先 "logcounts"，否则第一个
+# annotation   基因 ID 类型（GSEABase GeneIdentifierType），用于基因集与数据的 ID 映射；
+#              NULL 时尝试从 exprData 推断，失败则只能按原样直接匹配
+# minSize=1    映射后基因集最小基因数，小于此值的基因集被丢弃
+# maxSize=Inf  映射后基因集最大基因数，大于此值的被丢弃
+#              （通路分析常设 minSize=5~10, maxSize=200~500 去掉过小/过大的集）
+cat("通用参数：assay / annotation / minSize / maxSize\n")
+```
+
+## ★ 方法特有参数
+
+### `kcdf`（见 Ch3 已详述）
+ECDF 估计的核类型：`"auto"`(默认) / `"Gaussian"`(连续) / `"Poisson"`(计数) / `"none"`。
+`kcdfNoneMinSampleSize=200`：`kcdf="auto"` 时，样本量低于该阈值倾向用核估计，否则可直接用 none。
+
+### `tau = 1`（随机游走尾部权重）
+```{r param-tau, eval=TRUE}
+# 控制 KS 随机游走中"高表达基因"的权重指数。
+# tau 越大 → 越强调排名靠前（高表达）的基因对富集分数的贡献。
+# GSVA 方法默认 tau = 1（ssGSEA 对应参数叫 alpha，默认 0.25）。
+# 一般保持默认；除非有特定理由要调整尾部敏感度。
+cat("tau：游走尾部权重，GSVA 默认 1\n")
+```
+
+### `maxDiff = TRUE`（富集分数 ES 的取法）
+```{r param-maxDiff, eval=TRUE}
+# 从 KS 随机游走统计量得到富集分数 ES 的两种方式：
+#   maxDiff = FALSE：ES = 随机游走离 0 的最大绝对偏离（经典单边）
+#                    → 分数偏单峰、多为正值
+#   maxDiff = TRUE （默认）：ES = 最大正偏离与最大负偏离的"幅度之差"
+#                    → 分数近似正态、可正可负，便于跨样本比较与下游统计
+# 经验：做样本间差异/建模 → 用默认 TRUE；想要类 GSEA 的单边 ES → FALSE。
+cat("maxDiff：TRUE(默认,双边,近正态) / FALSE(单边,最大偏离)\n")
+```
+
+### `absRanking = FALSE`（仅当 `maxDiff=TRUE` 生效）
+```{r param-absRanking, eval=TRUE}
+# 选择 Kuiper 统计量的变体：
+#   absRanking = FALSE（默认）：修正版 Kuiper，取正负最大偏离的"差"
+#   absRanking = TRUE：原始 Kuiper，取正负最大偏离的"和"
+#     → 此时在任一极端（高或低）富集的基因集都会被判为"高激活"
+# 默认 FALSE 即可，除非明确想让双向极端都算激活。
+cat("absRanking：默认 FALSE\n")
+```
+
+### `sparse = TRUE`（稀疏输入才生效）
+```{r param-sparse, eval=TRUE}
+# 当 exprData 是稀疏矩阵（dgCMatrix 或内含 dgCMatrix 的 SCE）时：
+#   sparse = TRUE （默认）：用稀疏版 GSVA 算法，省内存、更快
+#   sparse = FALSE：退回经典稠密算法（结果可能有极小数值差异）
+# 单细胞大数据保持默认 TRUE。
+cat("sparse：稀疏输入默认走稀疏算法\n")
+```
+
+### `filterRows = TRUE`（常量行过滤）
+```{r param-filterRows, eval=TRUE}
+# 是否过滤"跨样本恒定表达"的行（这类行无信息且会拖慢/干扰 ECDF）。
+#   TRUE（默认）：自动剔除常量行（含全零行与非零恒定行）
+#   FALSE：仅当你确定没有常量行时设，可省运行时间（百万列级数据有意义）
+cat("filterRows：默认 TRUE，自动剔除常量行\n")
+```
+
+### NA 缺失值策略（`checkNA` + `use`）
+```{r param-na, eval=TRUE}
+# checkNA = "auto"(默认) / "yes" / "no"：是否检查输入中的 NA
+# use     = "everything"(默认) / "all.obs" / "na.rm"：发现 NA 时如何处理
+#   "everything" 任何 NA 都会传导到结果
+#   "all.obs"    有 NA 即报错
+#   "na.rm"      计算时忽略 NA
+# 数据已清洗时用默认即可；已知含 NA 且想容忍 → use="na.rm"
+cat("NA 策略：checkNA + use\n")
+```
+
+## 完整调用示例
+
+```{r gsvaParam-demo}
+# 连续型数据（如 log-CPM）→ kcdf 用 Gaussian；通路大小过滤 5~300
+gsvaPar <- gsvaParam(
+  exprData = X,
+  geneSets = gs,
+  kcdf     = "Gaussian",
+  minSize  = 5,
+  maxSize  = 300,
+  maxDiff  = TRUE,
+  tau      = 1
+)
+gsvaPar                       # 打印参数对象摘要
+
+gsva.es <- gsva(gsvaPar, verbose = FALSE)
+dim(gsva.es)                  # 基因集 × 样本
+gsva.es[, 1:5]                # 富集分数（可正可负）
+```
+
+---
+
+# Chapter 5：ssGSEA 方法 — `ssgseaParam` 逐参数 {#ch5}
+
+> 源文件：`GSVA/R/ssgsea.R`（构造器 `ssgseaParam` 在 Line 207、`gsva` 方法在 Line 13）、`AllClasses.R`（类文档 Line 265-328）
+
+## 构造器签名
+
+```{r ssgseaParam-signature, eval=TRUE}
+# ssgseaParam(
+#   exprData, geneSets,                      # 数据 + 基因集（必需）
+#   assay = NA_character_, annotation = NULL,
+#   minSize = 1, maxSize = Inf,              # 基因集大小过滤
+#   alpha = 0.25,                            # ★ 随机游走尾部权重指数
+#   normalize = TRUE,                        # ★ 是否做最终归一化
+#   checkNA = c("auto","yes","no"),          # NA 检查
+#   use = c("everything","all.obs","na.rm"), # NA 处理
+#   ondisk = c("auto","yes","no"),
+#   verbose = TRUE
+# )
+cat("ssgseaParam 构造器签名已展示\n")
+```
+
+> 注意：ssGSEA **没有** `kcdf` / `tau` / `maxDiff` / `absRanking` / `sparse` / `filterRows`。
+> 因为它逐样本独立排名、不做跨样本 ECDF，方法特有参数只有 `alpha` 与 `normalize` 两个。
+
+## 通用参数
+与 GSVA 相同：`exprData` / `geneSets` / `assay` / `annotation` / `minSize` / `maxSize`（含义见 Ch4）。
+
+## ★ 方法特有参数（只有两个）
+
+### `alpha = 0.25`（随机游走尾部权重指数）
+```{r param-alpha, eval=TRUE}
+# ssGSEA 在样本内按表达排名做加权随机游走，alpha 是排名权重的指数。
+#   alpha 越大 → 越强调排名最靠前（高表达）的基因
+#   Barbie et al. (2009) 原文默认 alpha = 0.25，一般保持默认
+# 对应 GSVA 方法里的 tau（但默认值不同：ssGSEA 0.25 / GSVA 1）。
+cat("alpha：ssGSEA 游走权重指数，默认 0.25\n")
+```
+
+### `normalize = TRUE`（最终归一化）
+```{r param-normalize, eval=TRUE}
+# TRUE（默认）：按 Barbie 原文，用所有分数的 (max - min) 极差对分数做归一化
+#               → 分数被缩放到可比范围
+# FALSE：跳过该步，返回未归一化的原始富集分数
+# 注意：normalize=TRUE 的归一化是"跨整个分数矩阵"的，因此严格说结果会依赖
+#       当前批次包含哪些样本与基因集；要逐样本完全独立时可设 FALSE。
+cat("normalize：默认 TRUE（按极差归一化）\n")
+```
+
+### NA 策略（`checkNA` + `use`）
+与 GSVA 相同（见 Ch4）。
+
+## 完整调用示例
+
+```{r ssgseaParam-demo}
+ssgseaPar <- ssgseaParam(
+  exprData  = X,
+  geneSets  = gs,
+  alpha     = 0.25,
+  normalize = TRUE,
+  minSize   = 5,
+  maxSize   = 300
+)
+ssgseaPar
+
+ssgsea.es <- gsva(ssgseaPar, verbose = FALSE)
+dim(ssgsea.es)                # 基因集 × 样本
+ssgsea.es[, 1:5]              # ssGSEA 富集分数
+```
+
+---
+
+# Chapter 6：调度流程与返回值结构 / Flow & return {#ch6}
+
+> 源文件：`GSVA/R/gsva.R:145`、`GSVA/R/ssgsea.R:13`
+
+## `gsva()` 的 S4 分发
+
+```{r dispatch, eval=TRUE}
+# 统一入口 gsva(param) 根据 param 的类型分发到不同算法：
+#   gsva( gsvaParam   ) → gsva.R:145    的 setMethod
+#   gsva( ssgseaParam ) → ssgsea.R:13   的 setMethod
+# 这就是"方法 = 参数对象类型"的实现机制。
+cat("gsva() 按 param 类型做 S4 方法分发\n")
+```
+
+## GSVA 方法内部三步（调度层，不挖内核）
+
+```{r gsva-flow, eval=TRUE}
+# gsva(gsvaParam) 依次调用（gsva.R:159-170）：
+#
+#   1. gsvaRowNorm()    行归一化：跨样本估计每个基因的 ECDF（用 kcdf 指定的核）
+#        ↓
+#   2. gsvaColRanks()   列排名：每个样本内把基因按归一化值排名
+#        ↓
+#   3. gsvaColScores()  列打分：对每个基因集做 KS 随机游走，得到富集分数 ES
+#
+# 参数落点：kcdf 在第1步；tau/maxDiff/absRanking 在第3步。
+cat("GSVA: rowNorm → colRanks → colScores\n")
+```
+
+## ssGSEA 方法内部流程
+
+```{r ssgsea-flow, eval=TRUE}
+# gsva(ssgseaParam)（ssgsea.R:26-71）：
+#
+#   1. .filterAndMapGenesAndGeneSets()  过滤 + 基因 ID 映射 + 基因集大小过滤
+#        ↓
+#   2. ssgsea()  核函数：样本内排名 + 加权随机游走（alpha），可选 normalize
+#        ↓
+#   3. wrapData()  把分数矩阵包装回与输入相称的容器
+#
+# 参数落点：minSize/maxSize 在第1步；alpha/normalize 在第2步。
+cat("ssGSEA: filter&map → ssgsea kernel → wrap\n")
+```
+
+## 返回值结构
+
+```{r return-structure, eval=TRUE}
+# gsva() 返回的容器类型"随输入而定"（与 exprData 相称）：
+#   输入 matrix              → 返回 matrix（基因集 × 样本）
+#   输入 SummarizedExperiment → 返回 SummarizedExperiment（assay 为富集分数）
+#   输入 SingleCellExperiment → 返回 SingleCellExperiment
+#   输入 ExpressionSet        → 返回 ExpressionSet
+#
+# 不论容器，核心都是一个 [基因集 × 样本/细胞] 的富集分数矩阵：
+#   行 = 通过大小过滤后保留的基因集
+#   列 = 样本/细胞
+#   值 = 富集分数（GSVA 可正可负；ssGSEA 视 normalize 而定）
+#
+# 从 SE/SCE 取分数矩阵：assay(es) 或 SummarizedExperiment::assay(es, 1)
+cat("返回容器随输入而定，核心是 基因集 × 样本 的分数矩阵\n")
+```
+
+---
+
+# Chapter 7：端到端示例 + 跨方法长表 + FAQ {#ch7}
+
+## 7.1 准备数据与基因集
+
+```{r e2e-data}
+library(GSVA); library(GSEABase); library(Matrix)
+set.seed(123)
+
+# 模拟 bulk-like 连续表达（log 尺度），1000 基因 × 40 样本
+nGenes <- 1000; nSamples <- 40
+expr <- matrix(rnorm(nGenes * nSamples, mean = 6, sd = 2),
+               nrow = nGenes, ncol = nSamples,
+               dimnames = list(paste0("Gene", 1:nGenes),
+                               paste0("Sample", 1:nSamples)))
+
+# 让部分样本的某通路系统性升高（制造可检出的信号）
+pathway_genes <- paste0("Gene", 1:50)
+hi_samples    <- 1:20
+expr[pathway_genes, hi_samples] <- expr[pathway_genes, hi_samples] + 3
+
+# 基因集
+gs <- list(
+  TargetPathway = pathway_genes,                  # 应在前 20 个样本中高
+  Random_A      = sample(rownames(expr), 40),
+  Random_B      = sample(rownames(expr), 60)
+)
+```
+
+## 7.2 用 GSVA 与 ssGSEA 各打一次分
+
+```{r e2e-score}
+# GSVA：连续数据 → kcdf="Gaussian"
+gsva.es <- gsva(
+  gsvaParam(expr, gs, kcdf = "Gaussian", minSize = 5, maxSize = 300),
+  verbose = FALSE
+)
+
+# ssGSEA
+ssgsea.es <- gsva(
+  ssgseaParam(expr, gs, alpha = 0.25, normalize = TRUE, minSize = 5, maxSize = 300),
+  verbose = FALSE
+)
+
+# 验证信号：TargetPathway 在前 20 个样本应明显更高
+cat("GSVA   TargetPathway 均值 — 高组 vs 低组：\n")
+cat(round(mean(gsva.es["TargetPathway", 1:20]), 3), "vs",
+    round(mean(gsva.es["TargetPathway", 21:40]), 3), "\n")
+```
+
+## 7.3 导出跨方法对比长表（对接 CLAUDE.md §7 schema）
+
+```{r e2e-longtable}
+# 统一长表：method / cell / signature / score（+ 可选 binary/threshold）
+to_long <- function(score_mat, method) {
+  data.frame(
+    method    = method,
+    cell      = rep(colnames(score_mat), each = nrow(score_mat)),
+    signature = rep(rownames(score_mat), times = ncol(score_mat)),
+    score     = as.numeric(score_mat),
+    binary    = NA_integer_,    # GSVA/ssGSEA 为连续分数，无内建阈值
+    threshold = NA_real_,
+    row.names = NULL
+  )
+}
+
+long_all <- rbind(
+  to_long(as.matrix(gsva.es),   "GSVA"),
+  to_long(as.matrix(ssgsea.es), "ssGSEA")
+)
+head(long_all)
+
+# 与 AUCell/UCell 的长表 rbind 后即可横向对比
+# dir.create("results/GSVA", recursive = TRUE, showWarnings = FALSE)
+# write.csv(long_all, "results/GSVA/gsva_scores_long.csv", row.names = FALSE)
+```
+
+## 7.4 常见问题 Q&A
+
+```{r e2e-faq, eval=TRUE}
+# Q1: 报错 "fewer than ... gene sets" / 基因集全被过滤？
+#   → 基因集 ID 与表达矩阵行名不匹配。检查：
+#     sum(gs[[1]] %in% rownames(expr))   # 应 > 0
+#   → 或 minSize/maxSize 把基因集都筛掉了，放宽阈值。
+
+# Q2: GSVA 分数和 ssGSEA 差别很大、甚至符号不同？
+#   → 正常。两者统计量与归一化都不同；GSVA 跨样本相对(可正可负)，
+#     ssGSEA 样本内独立。不要直接比数值，按方法内分布标准化后再比。
+
+# Q3: 数据是原始 count 还是 log？kcdf 怎么选？
+#   → log/连续 → kcdf="Gaussian"；原始整数 count → kcdf="Poisson"；
+#     拿不准 → "auto"。ssGSEA 无此参数。
+
+# Q4: 只有少数几个样本，能用 GSVA 吗？
+#   → GSVA 依赖跨样本 ECDF，样本太少(如 <10)分数不稳；
+#     此时 ssGSEA（逐样本独立）更稳健。
+
+# Q5: 单细胞大矩阵内存不够？
+#   → 用稀疏 dgCMatrix + sparse=TRUE；超大时 ondisk="yes"(HDF5 落盘) +
+#     BPPARAM=MulticoreParam(n) 并行。
+cat("FAQ 已展示\n")
+```
+
+---
+
+# Chapter 8：速查表 + 方法选择建议 {#ch8}
+
+## 8.1 函数 / 参数速查
+
+```{r quick-ref, eval=TRUE}
+ref <- data.frame(
+  项 = c(
+    "gsva(param, ...)",
+    "gsvaParam(...)",
+    "ssgseaParam(...)",
+    "kcdf  [仅GSVA]",
+    "tau   [仅GSVA]",
+    "maxDiff [仅GSVA]",
+    "absRanking [仅GSVA]",
+    "sparse [仅GSVA]",
+    "filterRows [仅GSVA]",
+    "alpha [仅ssGSEA]",
+    "normalize [仅ssGSEA]",
+    "minSize/maxSize [共用]",
+    "assay/annotation [共用]",
+    "BPPARAM [运行]",
+    "ondisk/maxmem [运行]"
+  ),
+  说明 = c(
+    "统一入口，按 param 类型分发算法",
+    "构造 GSVA 参数对象",
+    "构造 ssGSEA 参数对象",
+    "ECDF 核：auto/Gaussian(连续)/Poisson(计数)/none",
+    "游走尾部权重，默认 1",
+    "ES 取法：TRUE 双边近正态(默认)/FALSE 单边",
+    "Kuiper 变体，默认 FALSE",
+    "稀疏输入用稀疏算法，默认 TRUE",
+    "过滤常量行，默认 TRUE",
+    "游走权重指数，默认 0.25",
+    "按极差归一化，默认 TRUE",
+    "基因集大小过滤（常用 5~300）",
+    "多 assay 选择 / 基因 ID 映射",
+    "并行后端：Multicore(Mac/Linux)/Snow(Win)",
+    "落盘与内存上界，超大数据用"
+  ),
+  stringsAsFactors = FALSE
+)
+knitr::kable(ref, caption = "GSVA / ssGSEA 速查（[]内标注归属）")
+```
+
+## 8.2 GSVA vs ssGSEA 选择建议
+
+```{r choose, eval=TRUE}
+# 选 GSVA：
+#   - 有一组样本(≥10+)，关心通路在样本间的相对高低
+#   - 要做后续差异分析/建模（maxDiff=TRUE 的分数近正态，friendly）
+#   - 数据是连续(log)或计数(选对 kcdf)
+#
+# 选 ssGSEA：
+#   - 样本很少，或要求逐样本完全独立打分
+#   - 想要经典 Barbie 2009 富集分数语义
+#   - 单细胞逐细胞打分（与 AUCell/UCell 对齐比较时）
+#
+# 本项目对比策略：同数据 + 同 .gmt，两法都跑，输出统一长表(见 7.3)，
+# 按方法内分布标准化后横向比较（详见 CLAUDE.md §7）。
+cat("GSVA：多样本相对富集；ssGSEA：逐样本独立富集\n")
+```
+
+```{r session-info}
+sessionInfo()
+```

@@ -22,8 +22,8 @@ results/
 Thumbs.db
 desktop.ini
 
-# GSVA source — not yet added as submodule
-GSVA/
+# GSVA source — not yet added as submodule (root-level only; do NOT match workflows/GSVA)
+/GSVA/
 
 # Root-level working drafts (canonical copies live in workflows/)
 /AUCell_完整学习手册.R
