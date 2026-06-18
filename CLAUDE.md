@@ -16,9 +16,12 @@
 |------|---------|---------|
 | **UCell** | Mann-Whitney U 统计量（基于排名）| scRNA-seq，大数据友好，支持 Seurat/SCE |
 | **AUCell** | AUC 曲线下面积（基于排名）| scRNA-seq，逐细胞活性打分 |
-| **GSVA / ssGSEA** | KS 随机游走 | bulk / 单细胞 / 微阵列 |
+| **GSVA**（含 ssGSEA）| KS 随机游走 / 富集分数 | bulk / 单细胞 / 微阵列；本项目只用 `gsva` + `ssgsea` 两个 method |
 
-> ⚠️ **第三方法待澄清**：远端 submodule 与 README 把第三个方法定为 **ssGSEA**（`GSEA-MSigDB/ssGSEA-gpmodule`），但本地源码目录是 **GSVA**（`GSVA` 包），且根目录同时存在 GSVA 与 ssGSEA 两篇文献 PDF。两者算法相关但不同。**在用户明确前，GSVA 与 ssGSEA 视为各自独立的待办方法，不要混为一谈。** 见 §8。
+> ✅ **第三方法已定（2026-06）= GSVA 包**。经查本地源码 `GSVA/R/`，GSVA 包是**四方法统一框架**（`gsva` / `ssgsea` / `plage` / `zscore`），原文 `AllClasses.R:103`："GSVA implements four single-sample gene set analysis methods: PLAGE, combined z-scores, ssGSEA, and GSVA"。统一入口 `gsva(param)`，参数对象有 `gsvaParam` / `ssgseaParam` / `plageParam` / `zscoreParam`。
+> 因此：
+> - **ssGSEA 是 GSVA 包的一个 method**，无需单独立项；远端 `ssGSEA-gpmodule` submodule（GSEA-MSigDB 的 GenePattern 独立实现）降为**历史 provenance**，不再单独写 workflow。
+> - **本项目只聚焦 `gsva` 与 `ssgsea` 两个 method**（用户只需通路/基因集分数）；`plage` 与 `zscore` **不在范围内**，学习稿中至多一句带过。
 
 用户的真实诉求分两层：
 1. **先学懂**：每个方法的源码调用方式、每个参数的含义与取值流程 —— 这样才能自己做分析。
@@ -198,13 +201,13 @@ data.frame(
 
 | 方法 | 类型A 学习稿 | 类型B 报告稿 | 分支 | 备注 |
 |------|:---:|:---:|------|------|
-| AUCell | ✅ 已完成 | ⬜ 待做 | `claude-aucell` | 学习稿 10 章已推送；Ch1 积分推导略超天花板，可降级为附录 |
+| AUCell | ✅ 已完成 | ⬜ 待做 | `claude-aucell`(已合并) | 学习稿 10 章已在 main；Ch1 积分推导略超天花板，可降级为附录 |
 | UCell | ⬜ 待做 | 🟡 雏形 | `claude-ucell` | Zilionis 文档已在 main，需按 §4 升级到"美观报告"档 |
-| GSVA / ssGSEA | ⬜ | ⬜ | `claude-gsva`? | **方法身份待用户澄清，见 §1** |
+| GSVA | 🚧 进行中 | ⬜ | `claude-gsva` | 只做 `gsva`+`ssgsea` 两 method；ssGSEA 即 GSVA 包内 method，见 §1 |
 
 **优先级**：先补齐 AUCell↔UCell 的对称缺口（AUCell 加报告稿、UCell 加学习稿并把现有文档升级到报告档），再启动第三方法。
 
 **待用户决策**（阻塞项）：
-1. 第三个方法到底是 **GSVA** 还是 **ssGSEA**？还是两个都要？这决定 submodule 与目录结构。
+1. ~~第三个方法是 GSVA 还是 ssGSEA~~ → **已定 = GSVA 包，只做 `gsva`+`ssgsea` 两 method**（见 §1）。
 2. 跨方法对比选用的**基准公开数据集**与**基准基因集 .gmt**（建议沿用 UCell 已用的 Zilionis，以便直接对齐）。
 3. 仓库名不一致：远端 `CausalityAI-multiGRN-workflows` vs 本地路径 `Causality+AI+mulitiGRN` vs UCell 脚本里的 `Causality+AI-multiGRN`——仅影响硬编码路径，按 §5 改造后即无关，但请知悉。
