@@ -1,0 +1,548 @@
+---
+title: "UCell 完整学习手册"
+subtitle: "源码级参数解析 × 官方真实数据 | 基于 UCell v2.x"
+author: "参考：UCell 官方 vignette + 源码（Causality+AI+mulitiGRN/UCell/）"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    latex_engine: xelatex
+    highlight: tango
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    number_sections: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo      = TRUE,      # 学习稿：代码即教学内容
+  eval      = FALSE,     # 默认不跑（装好 UCell 后改 TRUE 可逐块测试）
+  warning   = FALSE,
+  message   = FALSE,
+  comment   = "#>",
+  fig.width = 7,
+  fig.height = 5
+)
+```
+
+> **关于本手册**
+>
+> - **全程使用官方真实数据**：表达矩阵 = UCell 包自带的 `data(sample.matrix)`（其 `@examples` 同款，真实单细胞、离线可用）；基因签名 = UCell 官方 vignette 的免疫细胞标记。**不使用虚构模拟数据**。更大规模的真实工作流见同目录 `UCell_zilionis_workflow_zh_en.Rmd`（用 `scRNAseq::ZilionisLungData()`）。
+> - **深度**：讲透参数语义 + 调用调度流程，算法只到"直觉 + 输入输出契约"，不深入数值内核（Mann-Whitney U 公式见附录，选读）。
+> - **如何运行**：默认 `eval=FALSE`。装好 `UCell` 后把代码块改 `eval=TRUE` 即可逐块跑（`sample.matrix` 随包自带，无需下载）。
+> - **参考**：Andreatta & Carmona, 2021, *CSBJ* (UCell)；官方 `vignette("UCell")`。
+
+---
+
+# Chapter 0：依赖与安装 / Dependencies {#ch0}
+
+> 源文件：`UCell/DESCRIPTION`、`UCell/NAMESPACE`
+
+UCell 是个轻量包，核心只依赖 `data.table`（做高效排名）和 `Matrix`（稀疏矩阵）。
+其余依赖按"你用到哪个功能才需要哪个"来装：只在矩阵上打分，核心依赖就够；
+要接 `SingleCellExperiment` / `Seurat` 对象，或用 kNN 平滑，才需要对应的可选包。
+
+| 类别 | 包 | 在本手册的哪一章用到 |
+|------|----|------|
+| 核心 | `UCell` | 全程（自带 `sample.matrix`）|
+| 核心 | `data.table` | 内部排名引擎（`frank`），无需手动调用 |
+| 核心 | `Matrix` | 稀疏矩阵 `dgCMatrix`（单细胞标准格式）|
+| 容器 | `SingleCellExperiment` / `SummarizedExperiment` | Ch6（SCE 输入/输出）|
+| 并行 | `BiocParallel` | Ch4（`BPPARAM` 多核加速）|
+| 平滑 | `BiocNeighbors` | Ch7（`SmoothKNN()` 的 kNN 计算）|
+| Seurat | `Seurat` | Ch6（`AddModuleScore_UCell()`）|
+
+```{r install}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+
+BiocManager::install("UCell")
+# 用到 SCE / kNN 平滑时再装：
+# BiocManager::install(c("SingleCellExperiment", "BiocNeighbors"))
+```
+
+```{r load-libs}
+library(UCell)
+library(Matrix)
+```
+
+---
+
+# Chapter 1：UCell 是什么 + 算法直觉 / Intuition {#ch1}
+
+> 源文件：`UCell/R/ScoreSignatures_UCell.R`、`UCell/R/HelperFunctions.R`（`u_stat`）
+
+## 1.1 它解决什么问题
+
+单细胞数据里，我们常想知道：**这个细胞像不像某种类型 / 有没有激活某条通路？**
+比如给定一组 T 细胞标记基因（CD3D、CD3E…），我们希望对每个细胞算一个分数，
+分数高 = 这个细胞更可能是 T 细胞。UCell 做的就是这件事——**逐个细胞、为每个基因签名打一个 0–1 的活性分数**。
+
+与做差异表达或聚类不同，UCell **不需要先分组、不需要参照样本**：每个细胞自己就能算出分数。
+这让它特别适合"用已知 marker 给细胞注释 / 评估通路活性"这类任务。
+
+## 1.2 核心思想：只看"排名"，不看"数值"
+
+UCell 的关键设计是：**分数只取决于签名基因在该细胞内的表达排名，而不是表达的绝对值。**
+
+为什么这样设计很重要，值得展开讲：
+
+- **免归一化、跨数据集可比**。一个细胞测到 5 万 reads、另一个测到 5 千 reads，
+  绝对表达值差一个数量级，但"CD3D 在这个细胞里排第几"这件事不受文库大小影响。
+  所以 UCell 分数对测序深度、批次、归一化方式都稳健（源码注释原话：
+  *"robust across datasets regardless of dataset composition"*）。
+- **抗噪**。单个基因的 dropout（该测到却为 0）只会让它排名靠后一点，
+  不会像"取均值"那样被一两个异常高值带偏。
+- **可解释**。分数被归一化到 0–1：**1 = 签名基因全部排在该细胞表达最前面；
+  0 = 签名基因全部掉到 `maxRank` 之外（视为未表达）**。0.5 左右则是中等。
+
+## 1.3 一个细胞内是怎么算的（直觉，不挖内核）
+
+```{r intuition, eval=TRUE}
+# 设某签名有 3 个基因，某细胞内只对表达最高的 maxRank 个基因排名。
+# 假设这 3 个基因在该细胞排名为 2、5、8（数字越小=表达越靠前）：
+gene_ranks <- c(CD3D = 2, CD3E = 5, CD3D2 = 8)
+n          <- length(gene_ranks)
+maxRank    <- 1500
+
+rank_sum     <- sum(gene_ranks)          # 秩和：越小说明签名基因越靠前
+rank_sum_min <- n * (n + 1) / 2          # 理论最小秩和(全排最前 1+2+3)
+ucell        <- 1 - (rank_sum - rank_sum_min) / (n * maxRank - rank_sum_min)
+round(ucell, 4)                          # 越接近 1 = 该签名在此细胞越活跃
+```
+
+**怎么读这段**：秩和 `rank_sum` 越小（基因越靠前），分数越接近 1。
+公式只是把"签名基因的平均排名"线性映射到 0–1。这就是归一化的 **Mann-Whitney U 统计量**，
+数学上与 ROC 曲线下面积（AUROC）相关（Mason & Graham, 2002）。精确推导见**附录**，日常用不到。
+
+## 1.4 和本项目其他方法的关系
+
+| 方法 | 统计量 | 依赖样本群体？ | 分数 | 一句话 |
+|------|--------|:---:|------|--------|
+| **UCell** | Mann-Whitney U（样本内排名）| 否 | 0–1 | 逐细胞、原生支持正负基因 |
+| AUCell | 排名前 X% 的 AUC | 否 | 0–1 | 逐细胞，看"前 X% 命中率" |
+| GSVA | KS 游走 + 跨样本 ECDF | **是** | 可正可负 | 需一组样本，相对富集 |
+| ssGSEA | 加权游走（样本内）| 否 | 富集分数 | 逐样本独立 |
+
+**分析**：UCell 和 AUCell 是"近亲"——都基于细胞内排名、都输出 0–1、都逐细胞独立，
+所以都适合单细胞逐细胞注释；区别在统计量（U 统计量 vs 前 X% 的 AUC）。
+GSVA/ssGSEA 则偏 bulk/通路富集，GSVA 还依赖一组样本一起算。
+**UCell 相对 AUCell 的独特卖点是原生支持"正负基因集"**（见 Ch3）——可以同时说
+"这些基因应该高、那些基因应该低"，这在区分相近细胞类型时很有用。
+
+---
+
+# Chapter 2：准备官方数据 / Official data {#ch2}
+
+> 数据：`data(sample.matrix, package="UCell")`（包自带，真实）；签名取自官方 vignette
+
+## 2.1 表达矩阵
+
+UCell 包自带一份真实的单细胞表达矩阵 `sample.matrix`，正是源码 `@examples` 用的那一份，
+随包安装、无需联网。我们整本手册都用它来演示，保证"所见即可复现"。
+
+```{r data-sample}
+library(UCell)
+data(sample.matrix)
+class(sample.matrix)           # dgCMatrix —— 稀疏矩阵，单细胞标准格式
+dim(sample.matrix)             # 行=基因，列=细胞
+sample.matrix[1:4, 1:3]        # 看一角：大量 0（稀疏），值为原始 counts
+```
+
+**分析**：注意三点——① 它是 `dgCMatrix`（稀疏），因为单细胞矩阵 90%+ 是 0，稀疏存储省内存；
+② 值是**原始 counts**，没归一化——UCell 不需要你先归一化（见 Ch1.2）；
+③ 行是基因、列是细胞，行名必须是基因符号，后面签名要靠它来匹配。
+更大规模的真实分析（约 5000 个免疫细胞）见同目录的 `UCell_zilionis_workflow_zh_en.Rmd`。
+
+## 2.2 基因签名
+
+签名就是"一组代表某种状态的基因"。这里用 UCell 官方 vignette 的两个免疫签名：
+
+```{r data-signatures}
+signatures <- list(
+  Tcell   = c("CD2", "CD3E", "CD3D"),       # T 细胞经典标记
+  Myeloid = c("SPI1", "FCER1G", "CSF1R")    # 髓系（巨噬/单核）标记
+)
+signatures
+```
+
+**分析**：签名是一个**命名列表**，名字（`Tcell`/`Myeloid`）会成为结果的列名。
+这里每个签名只有 3 个基因是为了演示精简；真实分析常用 10–100 个基因的 marker 集，
+基因越多分数越稳（个别基因 dropout 的影响被摊薄）。
+
+## 2.3 输入容器
+
+```{r input-types}
+# ScoreSignatures_UCell 的 matrix 参数接受多种容器，内部统一取出表达矩阵：
+#   matrix / dgCMatrix(推荐) / data.frame / SingleCellExperiment
+# SCE 用 assay= 指定用哪一层（默认 "counts"）。
+```
+
+**分析**：实务中最常见两种入口——直接喂稀疏矩阵（如从 `Seurat::GetAssayData()` 取的 counts），
+或喂整个 `SingleCellExperiment` 让分数写回对象（Ch6）。无论哪种，**记得用原始 counts**，
+不要先做 log/归一化——那对排名没帮助，反而多此一举。
+
+---
+
+# Chapter 3：基因签名格式 + 正负基因 / Signatures {#ch3}
+
+> 源文件：`UCell/R/HelperFunctions.R`（`check_signature_names`、`get_gene_idx`、`u_stat`）
+
+## 3.1 签名永远是"命名列表"
+
+```{r sig-list}
+signatures <- list(
+  Tcell   = c("CD2", "CD3E", "CD3D"),
+  Myeloid = c("SPI1", "FCER1G", "CSF1R")
+)
+```
+
+**讲解**：UCell 内部第一步就是 `check_signature_names()`：如果你给的列表没起名字，
+它会自动补成 `signature_1`、`signature_2`……为了结果可读，**务必自己起有意义的名字**，
+因为这些名字会原样成为输出矩阵的列名（再加 `_UCell` 后缀）。
+
+## 3.2 ★ 正负基因集——UCell 的招牌特性
+
+很多时候，光说"这些基因应该高"还不够区分相近的细胞类型。
+比如经典单核 vs 非经典单核，两者都表达髓系基因，差别在于"谁高谁低"。
+UCell 允许你在基因名后加 `+` / `-` 号，**同时指定"应该高"和"应该低"的基因**：
+
+```{r sig-posneg}
+sig_signed <- list(
+  # T 细胞：CD3 系应高(+)，髓系标记应低(-)
+  Tcell_refined = c("CD2+", "CD3E+", "CD3D+", "SPI1-", "CSF1R-")
+)
+```
+
+**讲解原理（契约层）**：打分时，**正基因排名越靠前→加分；负基因排名越靠前→减分**。
+所以一个真正的 T 细胞（CD3 高、髓系低）会拿到高分，
+而一个"CD3 也不低、但髓系也高"的可疑细胞会被负基因拉下来——这正是单纯正基因签名区分不开的。
+源码 `u_stat()` 里，负基因按"期望它们排名靠后"的方向计入秩和，与正基因相反。
+
+**什么时候用**：当两个细胞群共享一批正基因、只能靠"另一批基因的高低"区分时，负基因最有价值。
+若 marker 已经足够特异，纯正基因签名就够了。负基因的权重由 `w_neg` 控制（见 Ch4.3）。
+
+## 3.3 缺失基因怎么办
+
+签名里的基因不一定都在你的矩阵里（物种不同、注释版本不同、或干脆没测到）。
+
+```{r sig-missing}
+# missing_genes 参数（在 ScoreSignatures_UCell 里设）：
+#   "impute"（默认）：缺失基因按"表达为 0"处理（排名置于 maxRank），仍留在签名里
+#   "skip"          ：直接把缺失基因从签名中剔除
+```
+
+**分析与建议**：两者差别在于"分母"——`impute` 把缺失基因当作"明确未表达"，
+会让分数偏低（适合"缺失=该基因确实没表达"的可信数据）；
+`skip` 则当作"这个基因不算数"，用剩下的基因评分（适合"缺失只是没注释到"）。
+**先检查签名基因有多少真的在矩阵里**，覆盖率太低时分数没有意义：
+
+```{r sig-overlap}
+sapply(signatures, function(g) sum(g %in% rownames(sample.matrix)))  # 各签名命中几个基因
+```
+
+---
+
+# Chapter 4：核心函数 — `ScoreSignatures_UCell()` {#ch4}
+
+> 源文件：`UCell/R/ScoreSignatures_UCell.R`（Line 68）；官方 `@examples` 用 `sample.matrix`
+
+这是 UCell 最常用的函数：喂进表达矩阵 + 签名，吐出"细胞 × 签名"的分数矩阵。
+
+## 4.1 函数签名
+
+```{r score-sig}
+# ScoreSignatures_UCell(
+#   matrix = NULL, features,          # 表达矩阵 + 签名列表（必需）
+#   precalc.ranks = NULL,             # 预计算排名（见 Ch5）；给了则忽略 maxRank
+#   maxRank = 1500,                   # ★ 每个细胞排名上限（之外视为未表达）
+#   w_neg = 1,                        # ★ 负基因权重
+#   name = "_UCell",                  # 结果列名后缀
+#   assay = "counts",                 # SCE 用哪个 assay
+#   chunk.size = 100,                 # 每批处理多少细胞（内存/速度权衡）
+#   missing_genes = c("impute","skip"),
+#   BPPARAM = NULL, ncores = 1,       # 并行
+#   ties.method = "average",          # 排名并列处理（传给 data.table::frank）
+#   force.gc = FALSE                  # 显式 GC 省内存
+# )
+```
+
+## 4.2 ★ `maxRank = 1500`（最关键参数）
+
+**它做什么**：每个细胞内，UCell 只对表达最高的 `maxRank` 个基因排名；
+排名超过 `maxRank` 的基因一律按"未表达"处理（在公式里按 `maxRank` 计）。
+
+**为什么有这个参数、怎么选**：单细胞里大量基因是 0 或极低表达，
+对这些"噪声尾巴"精细排名既没意义又拖慢计算。`maxRank=1500` 的含义是
+"我认为一个细胞里大约能可靠检测约 1500 个基因，再往后不可信"。
+
+- **调小**（如 500）→ 只看表达最靠前的基因，更严格、更抗噪，但signature里中低表达的真marker可能被挤出去；
+- **调大**（如 3000）→ 纳入更多中低表达基因，灵敏度高，但噪声也进来了；
+- **怎么定**：看你数据每个细胞实际检测到多少基因（`colSums(matrix > 0)` 的中位数），
+  `maxRank` 设在这个量级附近比较合理。深度高、基因检测多的数据可调大。
+
+**⚠️ 关键陷阱**：如果你用了 `precalc.ranks`（Ch5），这里的 `maxRank` 会被**忽略**——
+排名在预计算时就定死了。想换 `maxRank` 必须重新 `StoreRankings_UCell()`。
+
+## 4.3 ★ `w_neg = 1`（负基因权重）
+
+```{r param-wneg}
+# 仅当签名含负基因(带 - 后缀)时才起作用：
+#   w_neg = 1   ：正、负基因等权（默认）
+#   w_neg = 0.5 ：负基因贡献减半
+#   w_neg = 0   ：完全忽略负基因（等于退化成纯正基因签名）
+```
+
+**分析**：负基因有时比正基因"噪声大"（一个基因"应该低"比"应该高"更难保证），
+所以当你发现加了负基因后分数变得不稳定，可以把 `w_neg` 调到 0.5 让负基因只起辅助作用，
+而不是和正基因平起平坐。
+
+## 4.4 其余参数（按重要性）
+
+- **`chunk.size = 100`**：UCell 把细胞分批处理。批越小越省内存但稍慢；
+  几十万细胞且内存吃紧时调小，内存宽裕想快一点可调大。它**不影响结果**，只影响资源占用。
+- **`missing_genes`**：见 Ch3.3，`impute`（默认）或 `skip`。
+- **`ties.method = "average"`**：表达值并列时怎么给排名（传给 `data.table::frank`）。
+  默认 `"average"`（并列取平均名次），一般无需改。
+- **`assay = "counts"`**：输入是 SCE 时从哪一层取数据。
+- **`name = "_UCell"`**：输出列名后缀，如 `Tcell_UCell`，避免和你已有的列重名。
+- **`BPPARAM` / `ncores`**：并行。给了 `BPPARAM`（如 `MulticoreParam(4)`）就用它，
+  否则按 `ncores` 起 `MulticoreParam(ncores)`。大数据才需要。
+
+## 4.5 官方真实数据示例 + 结果解读
+
+```{r score-demo}
+library(UCell); data(sample.matrix)
+signatures <- list(
+  Tcell   = c("CD2", "CD3E", "CD3D"),
+  Myeloid = c("SPI1", "FCER1G", "CSF1R")
+)
+scores <- ScoreSignatures_UCell(sample.matrix, features = signatures, maxRank = 1500)
+head(scores)                    # 行=细胞，列=签名(后缀 _UCell)，值∈[0,1]
+
+summary(scores)                 # 看每个签名分数的分布
+```
+
+**怎么读这张表**：每行一个细胞，每列一个签名。某细胞 `Tcell_UCell = 0.7` 而
+`Myeloid_UCell = 0.05`，就强烈提示它是 T 细胞。**通常 T 细胞和髓系细胞是互斥的两群**——
+若把两列画散点，理想情况是一群高 T/低髓、另一群低 T/高髓，中间空着。
+`summary()` 看分布也有用：如果某签名几乎所有细胞都接近 0，可能是 marker 没匹配上
+（回到 Ch3.3 查覆盖率），或者数据里本来就没有这类细胞。
+
+## 4.6 返回值
+
+```{r score-return}
+# 输入普通矩阵 → 返回矩阵：行 = 细胞，列 = 各签名(名 + name 后缀)，值 ∈ [0,1]
+# 输入 SingleCellExperiment → 返回该 SCE，分数存入 altExp(sce, "UCell")（见 Ch6）
+```
+
+---
+
+# Chapter 5：预计算排名 — `StoreRankings_UCell()` {#ch5}
+
+> 源文件：`UCell/R/StoreRankings_UCell.R`（Line 46）
+
+## 5.1 为什么需要它
+
+UCell 整个计算里，**最耗时的是"给每个细胞的基因排名"这一步**，而打分本身很快。
+排名只跟表达矩阵和 `maxRank` 有关，跟你用什么签名无关。
+所以如果你要在同一份数据上反复试——换不同 marker 集、调 `w_neg`、对比正负基因版本——
+每次都重排名是巨大的浪费。`StoreRankings_UCell()` 让你**排一次名、存下来、反复打分**。
+
+## 5.2 用法与示例
+
+```{r store-demo}
+set.seed(123)
+ranks <- StoreRankings_UCell(sample.matrix, maxRank = 1500)   # 排名只算一次
+ranks[1:4, 1:3]                                                # 预计算的排名矩阵
+
+# 之后所有打分都走 precalc.ranks，秒出结果（此时 maxRank 已固定，不能再改）
+scores_T  <- ScoreSignatures_UCell(precalc.ranks = ranks,
+                                   features = list(Tcell = c("CD2","CD3E","CD3D")))
+scores_My <- ScoreSignatures_UCell(precalc.ranks = ranks,
+                                   features = list(Myeloid = c("SPI1","FCER1G","CSF1R")))
+```
+
+**分析与权衡**：代价是内存——预计算的排名矩阵和原矩阵差不多大，要一直放在内存里。
+所以这是"用内存换时间"。**适合**：交互式探索、要扫很多签名；
+**不适合**：只打一次分、或内存非常紧张。注意 `maxRank` 在 `StoreRankings_UCell()` 时就定死，
+后续 `ScoreSignatures_UCell()` 的 `maxRank` 参数会被忽略。
+
+---
+
+# Chapter 6：Seurat / SCE 集成 {#ch6}
+
+> 源文件：`UCell/R/AddModuleScore_UCell.R`（Line 71）、`ScoreSignatures_UCell.R`（SCE 分支）
+
+大多数人不是在裸矩阵上工作，而是用 `SingleCellExperiment` 或 `Seurat` 对象。
+UCell 对两者都有原生支持，**直接把分数写回对象**，省去手动对齐细胞顺序的麻烦。
+
+## 6.1 SingleCellExperiment
+
+```{r sce-demo}
+library(SingleCellExperiment)
+sce <- SingleCellExperiment(list(counts = sample.matrix))
+sce <- ScoreSignatures_UCell(sce, features = signatures, assay = "counts")
+altExp(sce, "UCell")            # 分数作为一个 altExp 存进去（签名 × 细胞）
+```
+
+**讲解**：传 SCE 进去，返回的还是那个 SCE，但多了一个名为 `"UCell"` 的
+`altExp`（alternative experiment），里面是"签名 × 细胞"的分数。
+这样分数和原始数据绑在同一个对象里，后续按细胞子集/过滤时分数会跟着走，不会错位。
+
+## 6.2 Seurat — `AddModuleScore_UCell()`
+
+```{r seurat-demo}
+# seurat_obj <- AddModuleScore_UCell(seurat_obj, features = signatures)
+# head(seurat_obj[[]])     # meta.data 里多出 Tcell_UCell / Myeloid_UCell 两列
+```
+
+**讲解**：这个函数把分数直接加进 Seurat 对象的 `meta.data`（每个签名一列），
+之后就能像用任何 meta 列一样用它——`FeaturePlot(seurat_obj, "Tcell_UCell")` 在 UMAP 上着色、
+按分数过滤细胞、或当作聚类注释的依据。它的参数和 `ScoreSignatures_UCell()` 基本一致，
+两个值得注意的：
+
+- **`storeRanks = TRUE`**：把排名缓存进对象（同 Ch5 的思路），之后再加别的签名就不用重排名。
+- **`slot = "counts"`**：从哪个 slot 取表达。UCell 用原始 counts 即可，不必用 `data`（log 归一化）层。
+
+---
+
+# Chapter 7：kNN 平滑 — `SmoothKNN()` {#ch7}
+
+> 源文件：`UCell/R/SmoothKNN.R`（Line 77）、`HelperFunctions.R`（`knn_smooth_scores`）
+
+## 7.1 为什么要平滑
+
+单细胞数据噪声大（dropout、低 counts），导致**本该相似的相邻细胞，分数却忽高忽低**。
+`SmoothKNN()` 的思路是：在降维空间（PCA/UMAP）里，每个细胞的分数用它的**最近邻细胞**
+做加权平均来"抹平"。生物学假设是"邻居细胞状态相近，分数也该相近"，所以平滑能压噪、
+让分数在 UMAP 上呈现更连贯的区块，而不是椒盐噪点。
+
+## 7.2 参数与用法
+
+```{r smooth-demo}
+# obj <- SmoothKNN(obj, signature.names = names(signatures),
+#                  reduction = "pca", k = 20)
+# 结果新增列：原签名名 + suffix（默认 "_kNN"）
+```
+
+- **`signature.names`** ★：要平滑哪些签名（其实任意数值型 metadata 列都行）。
+- **`reduction`** ★：用哪个降维算近邻，如 `"pca"` / `"umap"`——**必须对象里已经有**这个降维。
+- **`k`** ★：取多少个近邻。**越大越平滑**，但太大会把不同细胞群也糊到一起，
+  抹掉真实边界；常用 10–30，需结合数据规模调。
+- **`decay`**：近邻权重的指数衰减 `(1-decay)^n`，越大越偏重最近的邻居（更"局部"）。
+- **`up.only = TRUE`**：平滑只允许分数升高、不下调——适合"宁可漏标也别把真信号抹平"的场景。
+
+**分析**：平滑是把双刃剑——压噪的同时也会模糊群界。**建议保留原始分数、另存平滑分数**
+（默认就加 `_kNN` 后缀而非覆盖），对比着看：如果平滑前后细胞类型判断变了，说明 `k` 太大了。
+
+---
+
+# Chapter 8：端到端示例 + 跨方法对接 + 速查 {#ch8}
+
+## 8.1 一条完整流程（官方真实数据）
+
+```{r e2e}
+library(UCell); data(sample.matrix)
+
+signatures <- list(
+  Tcell         = c("CD2", "CD3E", "CD3D"),
+  Myeloid       = c("SPI1", "FCER1G", "CSF1R"),
+  Tcell_refined = c("CD2+", "CD3E+", "CD3D+", "SPI1-", "CSF1R-")  # 正负基因版
+)
+
+# 1) 检查覆盖率（必做）
+sapply(signatures, function(g) mean(gsub("[+-]$","",g) %in% rownames(sample.matrix)))
+
+# 2) 预计算排名（要扫多个签名，先排一次）
+ranks  <- StoreRankings_UCell(sample.matrix, maxRank = 1500)
+
+# 3) 打分
+scores <- ScoreSignatures_UCell(precalc.ranks = ranks, features = signatures, w_neg = 1)
+head(scores)
+```
+
+**怎么读结果**：对比 `Tcell` 和 `Tcell_refined` 两列很有教学意义——
+对真正的 T 细胞两者都高；但对"CD3 不低、髓系也不低"的边界细胞，
+`Tcell_refined`（带负基因）会明显更低，因为髓系负基因把它拉下来了。
+这正体现了正负基因签名在区分相近群体时的价值（Ch3.2）。
+
+## 8.2 接入跨方法对比（CLAUDE.md §7 统一长表）
+
+```{r longtable}
+# UCell 返回"细胞 × 签名"，转成统一长表 method/cell/signature/score
+to_long <- function(score_mat, method) {
+  score_mat <- as.matrix(score_mat)
+  data.frame(
+    method = method,
+    cell = rep(rownames(score_mat), times = ncol(score_mat)),
+    signature = rep(colnames(score_mat), each = nrow(score_mat)),
+    score = as.numeric(score_mat),
+    binary = NA_integer_, threshold = NA_real_,
+    row.names = NULL)
+}
+long_ucell <- to_long(scores, "UCell")
+head(long_ucell)
+```
+
+**分析**：把这张长表和 AUCell / GSVA 的长表 `rbind` 起来，就能在同一套细胞、同一套签名上
+横向比三种方法。**但切记**（§7）：UCell 的 0–1、AUCell 的 0–1、GSVA 的可正可负，
+数值不可直接相等比较——要么比"排序/相关性"，要么各自在方法内标准化后再比。
+
+## 8.3 函数 / 参数速查
+
+```{r quick-ref, eval=TRUE}
+ref <- data.frame(
+  项 = c("ScoreSignatures_UCell()", "StoreRankings_UCell()",
+         "AddModuleScore_UCell()", "SmoothKNN()",
+         "maxRank", "w_neg", "chunk.size", "missing_genes", "precalc.ranks",
+         "正负基因 +/-"),
+  说明 = c("核心打分：矩阵/SCE → 细胞×签名分数",
+           "预计算排名，配 precalc.ranks 复用",
+           "Seurat：分数写入 meta.data",
+           "用降维近邻平滑分数(k/decay)",
+           "★每细胞排名上限,默认1500(>它视为未表达)",
+           "★负基因权重,默认1(等权)",
+           "每批细胞数,内存/速度权衡,默认100",
+           "缺失基因:impute(默认)/skip",
+           "用预存排名打分(此时忽略 maxRank)",
+           "基因后缀指定正/负基因,权重由 w_neg 控"),
+  stringsAsFactors = FALSE)
+knitr::kable(ref, caption = "UCell 速查（★=最关键参数）")
+```
+
+## 8.4 FAQ
+
+- **分数全是 0 / 很低？** 八成是签名基因 ID 与矩阵行名对不上（大小写、人鼠物种、Ensembl vs Symbol）。
+  先用 Ch3.3 的覆盖率检查；其次看 `maxRank` 是否太小把基因都挤出去了。
+- **要不要先归一化？** 不要。UCell 基于细胞内排名，直接喂原始 counts 即可（Ch1.2）。
+- **UCell 还是 AUCell？** 都基于排名、都 0–1、都逐细胞独立。要"同时约束高/低基因"就用 UCell（正负基因集）；
+  两者都跑、对比着看通常最稳妥。
+- **大数据慢 / 占内存？** 调小 `chunk.size` + 设 `BPPARAM` 并行；要反复打分就 `StoreRankings_UCell()` 复用排名。
+- **分数在 UMAP 上很"花"？** 用 `SmoothKNN()` 做近邻平滑（Ch7），但注意 `k` 别太大。
+
+## 附录：Mann-Whitney U 分数公式（选读，超出"学习"必需深度）
+
+```{r appendix, eval=TRUE}
+# 源码 u_stat()（HelperFunctions.R:18），对单个签名、所有细胞：
+#   rank_sum     : 签名基因排名之和（排名 >= maxRank 的按 maxRank 计；
+#                  缺失基因、负基因也按 maxRank 计入）
+#   rank_sum_min : n*(n+1)/2，n 个基因全排最前时的最小秩和
+#   UCell = 1 - (rank_sum - rank_sum_min) / (n*maxRank - rank_sum_min)  ∈ [0,1]
+# 直觉：把"签名基因的平均排名"线性映射到 [0,1]，排名越靠前→分数越高。
+# 这等价于归一化的 Mann-Whitney U 统计量，并与 AUROC 相关（Mason & Graham, 2002）。
+```
+
+```{r session-info}
+sessionInfo()
+```
