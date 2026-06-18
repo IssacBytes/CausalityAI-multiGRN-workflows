@@ -11,8 +11,9 @@ script_dir <- if (length(script_arg) > 0) {
 project_root <- normalizePath(file.path(script_dir, "../.."), winslash = "/")
 setwd(project_root)
 
-local_lib <- "F:/WorkSpace/Causality+AI-multiGRN/r-lib"
-.libPaths(c(local_lib, .libPaths()))
+# 可移植 R 库路径（CLAUDE.md §5）：优先环境变量，回退项目内 r-lib/
+local_lib <- Sys.getenv("MULTIGRN_RLIB", unset = file.path(project_root, "r-lib"))
+if (dir.exists(local_lib)) .libPaths(c(local_lib, .libPaths()))
 
 suppressPackageStartupMessages({
   library(UCell)

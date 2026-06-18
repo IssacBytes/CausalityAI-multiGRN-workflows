@@ -34,11 +34,14 @@ This notebook uses the official UCell vignette data source, `scRNAseq::ZilionisL
 ## 1. Setup
 
 ```{r setup}
-project_root <- "F:/WorkSpace/Causality+AI-multiGRN"
+# 可移植项目根（CLAUDE.md §5）：从 .gitmodules 向上定位，不硬编码机器路径
+project_root <- rprojroot::find_root(rprojroot::has_file(".gitmodules"))
 knitr::opts_knit$set(root.dir = project_root)
 setwd(project_root)
 
-.libPaths(c("F:/WorkSpace/Causality+AI-multiGRN/r-lib", .libPaths()))
+# R 库路径：优先环境变量，回退项目内 r-lib/
+local_lib <- Sys.getenv("MULTIGRN_RLIB", unset = file.path(project_root, "r-lib"))
+if (dir.exists(local_lib)) .libPaths(c(local_lib, .libPaths()))
 
 library(UCell)
 library(BiocParallel)
