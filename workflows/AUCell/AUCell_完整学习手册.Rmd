@@ -1,7 +1,7 @@
 ---
 title: "AUCell 完整学习手册"
-subtitle: "源码级参数解析与调用流程 | 基于 AUCell v1.25.2"
-author: "参考源码：Causality+AI+mulitiGRN/AUCell/R/"
+subtitle: "源码级参数解析 × 官方真实数据工作流 | 基于 AUCell v1.25.2"
+author: "参考：AUCell 官方 vignette + 源码（Causality+AI+mulitiGRN/AUCell/）"
 date: "`r Sys.Date()`"
 output:
   html_document:
@@ -21,1615 +21,685 @@ output:
     number_sections: true
     latex_engine: xelatex
     highlight: tango
-    keep_tex: false
-    includes:
-      in_header: null
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(
-  echo      = TRUE,      # 始终显示代码
-  eval      = FALSE,     # 默认不运行（需安装AUCell后改为TRUE）
+  echo      = TRUE,      # 学习稿：代码即教学内容，始终显示
+  eval      = FALSE,     # 默认不跑（见下方"如何运行"）
   warning   = FALSE,
   message   = FALSE,
   comment   = "#>",
-  fig.width = 8,
+  fig.width = 6,
   fig.height = 5
 )
 ```
 
-> **使用说明**
+> **关于本手册**
 >
-> - **逐块测试**：在 RStudio 中用 `Ctrl+Shift+Enter` 运行当前代码块，或点击块右上角的绿色 ▶ 按钮
-> - **全文渲染**：安装 AUCell 后将全局 `eval=FALSE` 改为 `eval=TRUE`，再 `Knit → HTML/PDF`
-> - **参考文献**：Aibar et al., 2017, *Nature Methods*（SCENIC 论文）
+> - **全程使用官方真实数据**：表达矩阵 = 官方 vignette 所用的 **GSE60361 小鼠脑单细胞数据**（Zeisel et al., 2015，3005 细胞）；基因集 = AUCell 包自带的 `geneSignatures.gmt`（脑细胞类型签名）；t-SNE 坐标与细胞标签 = 包自带的 `cellsTsne.RData` / `mouseBrain_cellLabels.tsv`。**不使用任何虚构的模拟数据**。
+> - **深度**：讲透参数语义 + 函数调度流程，算法只到"直觉 + 输入输出契约"，不深入数值内核（AUC 积分推导见末尾附录，选读）。
+> - **如何运行**：默认 `eval=FALSE`（只展示代码）。要真正跑，把代码块改 `eval=TRUE`；**首次运行会从 GEO 下载 GSE60361（约几十 MB），建议缓存到本地一次**（见 Ch2）。
+> - **参考**：Aibar et al., 2017 (SCENIC)；AUCell 官方 vignette `vignette("AUCell")`。
 
 ---
 
-# Chapter 0：包依赖与安装 {#ch0}
+# Chapter 0：依赖与安装 / Dependencies {#ch0}
 
-> 源文件：`AUCell/DESCRIPTION`、`AUCell/NAMESPACE`
+> 源文件：`AUCell/DESCRIPTION`、`AUCell/vignettes/AUCell.Rmd`
 
-## 依赖包说明
+## 依赖说明
 
-AUCell 的依赖分三类：
+| 类别 | 包 | 用途 |
+|------|----|------|
+| 核心 | `AUCell` | 主包 |
+| | `GSEABase` | GeneSet / GeneSetCollection 与 .gmt 读取 |
+| | `Matrix` | 稀疏矩阵 dgCMatrix |
+| 取数据 | `GEOquery` / `data.table` | 下载并读取 GSE60361 表达矩阵 |
+| 阈值 | `mixtools` | `AUCell_exploreThresholds()` 的混合分布拟合 |
+| 可视化 | `NMF` / `Rtsne` | 热图 / t-SNE（t-SNE 坐标已打包，无需重算）|
 
-| 类别 | 包名 | 主要用途 |
-|------|------|---------|
-| **Imports**（必需）| `DelayedArray` / `DelayedMatrixStats` | 延迟计算框架，支持超大矩阵块处理 |
-| | `GSEABase` | `GeneSet` / `GeneSetCollection` S4 对象系统 |
-| | `Matrix` | 稀疏矩阵 `dgCMatrix`，单细胞数据标准格式 |
-| | `mixtools` | 混合高斯分布拟合（用于阈值计算） |
-| | `SummarizedExperiment` | `aucellResults` 的父类容器 |
-| | `stats` / `graphics` | 统计与绘图基础函数 |
-| **Suggests**（可选）| `dynamicTreeCut` | `orderAUC()` 的层次聚类剪枝 |
-| | `Rtsne` | t-SNE 降维 |
-| | `Biobase` | `ExpressionSet` 对象支持 |
-| | `R2HTML` | 生成 HTML 报告（`asPNG=TRUE` 时需要）|
-| **Enhances**（并行）| `doMC` / `doRNG` / `foreach` | 多核并行计算加速 |
-
-## 安装代码
+## 安装
 
 ```{r install}
 if (!requireNamespace("BiocManager", quietly = TRUE))
   install.packages("BiocManager")
 
-# 主包（含所有 Imports 依赖）
 BiocManager::install("AUCell")
 
-# 可选增强包
-BiocManager::install(c(
-  "dynamicTreeCut",        # orderAUC() 需要
-  "doMC", "doRNG",         # 并行加速
-  "Rtsne",                 # t-SNE 降维
-  "SingleCellExperiment",  # SCE 对象支持
-  "Biobase"                # ExpressionSet 支持
-))
+# 本手册真实工作流额外需要：
+BiocManager::install(c("GEOquery", "data.table", "mixtools", "NMF"))
 ```
 
 ```{r load-libs}
 library(AUCell)
-library(GSEABase)   # GeneSet / GeneSetCollection
-library(Matrix)     # 稀疏矩阵 dgCMatrix
-library(BiocParallel)
+library(GSEABase)
+library(Matrix)
 ```
 
 ---
 
-# Chapter 1：核心算法原理 {#ch1}
+# Chapter 1：AUCell 是什么 + 三步工作流 / Overview {#ch1}
 
-> 源文件：`AUCell/R/02_calcAUC.R`（函数 `.auc`、`.AUC.geneSet_norm`、`.AUC.geneSet_old`）
+> 源文件：`AUCell/R/01_buildRankings.R`、`02_calcAUC.R`、`03_exploreThresholds.R`
 
-## 为什么基于排序？
+## 一句话定位
 
-AUCell **不直接使用表达量**，而是先将每个细胞内的基因按表达量从高到低排序，再在排名上做统计。
+> 在单细胞数据里，**逐个细胞**判断某个基因集（signature / 通路 / 细胞类型标记）是否"集体高表达"，输出一个 0–1 的活性分数 AUC。
 
-优势：
+## 为什么基于排名（核心思想）
 
-- **独立于归一化方式**：UMI / TPM / FPKM 均可直接输入
-- **独立于测序深度**：每个细胞内部独立排序，批次效应的影响大幅降低
-- **对噪声鲁棒**：单个基因的绝对值不重要，在细胞内的相对位置才重要
+AUCell 不直接用表达量，而是先把每个细胞内的基因**按表达量从高到低排名**，再看目标基因集是否集中在排名前端。好处：
 
-## AUC 的直觉理解
+- **独立于归一化与单位**：原始 counts / UMI / TPM 都行，无需预先归一化（官方 vignette §"Why AUCell" 专门论证：直接用均值会受文库大小影响，AUCell 因逐细胞排名而自动校正）。
+- **对噪声鲁棒**：单个基因的绝对值不重要，相对排名才重要。
 
-> **核心问题**：在某个细胞中，目标基因集（如神经元标记基因）是否"集体排在最前面"？
+## 三步工作流
 
-方法：只看排名前 `aucMaxRank` 位的基因，统计其中有多少属于目标基因集。
-
-- AUC **高** → 该基因集的基因大量出现在"前 5%"→ 该细胞高度活跃
-- AUC **低** → 目标基因集散布在排名末尾 → 该细胞不活跃
-
-## AUC 的数学计算（梯形积分）
-
-源码（`.auc` 函数，`02_calcAUC.R` Line 275-282）：
-
-```{r auc-formula, eval=TRUE}
-# 这是 AUCell 内部 .auc() 函数的完整逻辑（可直接运行）
-.auc_demo <- function(oneRanking, aucThreshold, maxAUC) {
-  x <- unlist(oneRanking)
-  x <- sort(x[x < aucThreshold])   # 只保留排名 < aucMaxRank 的目标基因
-  y <- seq_along(x)                  # 累计计数 1, 2, 3, ...
-  sum(diff(c(x, aucThreshold)) * y) / maxAUC  # 梯形积分
-}
-
-# 具体示例：5个目标基因，aucMaxRank=20
-target_ranks <- c(2, 5, 8, 12, 19)   # 目标基因在这个细胞里的排名
-aucThreshold  <- 20                    # 只看前 20 个基因
-
-x <- sort(target_ranks[target_ranks < aucThreshold])   # c(2,5,8,12,19)
-y <- seq_along(x)                                       # c(1,2,3,4,5)
-
-# 梯形宽度 = diff(c(x, aucThreshold)) = diff(c(2,5,8,12,19,20))
-widths <- diff(c(x, aucThreshold))   # c(3, 3, 4, 7, 1)
-cat("梯形宽度：", widths, "\n")
-cat("累计计数：", y, "\n")
-cat("各梯形面积：", widths * y, "\n")
-cat("总面积（未归一化）：", sum(widths * y), "\n")
+```{r workflow-overview, eval=TRUE}
+# Step 1  AUCell_buildRankings()  每个细胞内，基因按表达降序排名
+#            ↓  产出 ranking 矩阵（aucellResults 对象）
+# Step 2  AUCell_calcAUC()        看目标基因集在"排名前 aucMaxRank"中的 AUC
+#            ↓  产出 AUC 矩阵（基因集 × 细胞）
+# Step 3  AUCell_exploreThresholds()  定"活性/非活性"阈值，分配细胞
+#
+# 一步法：AUCell_run() = Step1 + Step2（见 Ch6）
+cat("buildRankings → calcAUC → exploreThresholds\n")
 ```
 
-几何意义：
-
-- **x 轴**：基因排名（1 到 `aucMaxRank`）
-- **y 轴**：到达该排名时，累计发现了多少目标基因
-- 折线下方的面积（梯形法）越大 → 目标基因越集中在排名前端 → **AUC 越高**
-
-## 归一化（`normAUC=TRUE` 的作用）
-
-```{r normAUC-demo, eval=TRUE}
-# normAUC=TRUE 时的最大值计算（.AUC.geneSet_norm，Line 261-264）
-n_target_genes <- 5   # 目标基因集大小
-aucThreshold   <- 20  # aucMaxRank
-
-# 理论最大面积：假设所有目标基因都排在最前面
-x_th <- sort(seq_len(n_target_genes)[seq_len(n_target_genes) < aucThreshold])
-y_th <- seq_along(x_th)
-maxAUC_norm <- sum(diff(c(x_th, aucThreshold)) * y_th)
-
-cat("归一化分母 maxAUC =", maxAUC_norm, "\n")
-cat("当前示例 AUC（归一化后）=", sum(c(3,3,4,7,1) * 1:5) / maxAUC_norm, "\n")
-# AUC ∈ [0, 1]，1.0 = 所有目标基因都在排名最前
-```
-
-## 与 GSEA / ssGSEA 的区别
-
-| 方法 | 统计量 | 适用场景 | 特点 |
-|------|-------|---------|------|
-| **GSEA** | Kolmogorov-Smirnov | 样本间比较 | 需要排列检验，不适合单样本 |
-| **ssGSEA** | 差分面积 | 单样本评分 | 使用全排序，计算慢 |
-| **AUCell** | 梯形积分（仅前X%）| 单细胞逐细胞 | 只看 `aucMaxRank`，快速，专为 scRNA-seq 设计 |
+AUC 分数的含义（官方 vignette §2 原话转述）：**AUC ≈ 信号基因集中"高表达基因所占比例"**——细胞表达了基因集里越多的基因、且它们排名越靠前，AUC 越高。AUC 的精确积分推导见 **附录 A**（选读，不影响使用）。
 
 ---
 
-# Chapter 2：数据输入格式 {#ch2}
+# Chapter 2：准备官方数据（GSE60361 小鼠脑）/ Official data {#ch2}
 
-> 源文件：`AUCell/R/01_buildRankings.R`（S4 方法分发部分）
+> 源文件：`AUCell/vignettes/AUCell.Rmd`（数据下载段，Line 146-185）
 
-AUCell 通过 S4 泛型自动识别输入类型，无需手动转换。
+本手册的表达矩阵就是官方 vignette 用的数据集——**Zeisel et al. (2015) 小鼠皮层/海马 3005 个细胞**（GEO: GSE60361）。
 
-## 支持的格式总览
+## 2.1 下载表达矩阵（官方代码，原样照搬）
 
-| 输入类型 | 内部处理 | 推荐程度 |
-|---------|---------|---------|
-| `matrix`（密集矩阵）| 直接使用 | ★★☆ 小数据集 |
-| `dgCMatrix`（稀疏矩阵）| 自动启用 `splitByBlocks=TRUE` | ★★★ **强烈推荐** |
-| `ExpressionSet` | 自动调用 `Biobase::exprs()` | ★★☆ 旧版兼容 |
-| `SummarizedExperiment` / `SingleCellExperiment` | 自动调用 `assay()` | ★★★ 现代标准 |
+```{r download-data}
+# —— 官方 vignette 的下载代码（首次运行；之后用缓存）——
+if (!requireNamespace("GEOquery", quietly = TRUE)) BiocManager::install("GEOquery")
+library(GEOquery)
+library(data.table)
 
-## 输入格式示例
-
-```{r input-formats}
-# ── 格式一：普通 matrix ──
-exprMatrix_dense <- matrix(
-  data = sample(0:10, 200 * 50, replace = TRUE),
-  nrow = 200, ncol = 50,
-  dimnames = list(
-    paste0("Gene", 1:200),   # 行名 = 基因名（必须！）
-    paste0("Cell", 1:50)     # 列名 = 细胞ID（必须！）
-  )
+geoFile <- "GSE60361_C1-3005-Expression.txt.gz"
+download.file(
+  "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE60nnn/GSE60361/suppl/GSE60361_C1-3005-Expression.txt.gz",
+  destfile = geoFile
 )
 
-# ── 格式二：稀疏矩阵 dgCMatrix（推荐）──
-exprMatrix_sparse <- as(exprMatrix_dense, "dgCMatrix")
-# 内存对比
-cat("密集矩阵：", format(object.size(exprMatrix_dense), units = "KB"), "\n")
-cat("稀疏矩阵：", format(object.size(exprMatrix_sparse), units = "KB"), "\n")
+exprMatrix <- fread(geoFile, sep = "\t")
+geneNames  <- unname(unlist(exprMatrix[, 1, with = FALSE]))
+exprMatrix <- as.matrix(exprMatrix[, -1, with = FALSE])
+rownames(exprMatrix) <- geneNames
+exprMatrix <- exprMatrix[unique(rownames(exprMatrix)), ]
+file.remove(geoFile)                       # 删掉下载的压缩包
 
-# ── 格式三：ExpressionSet（旧版 Biobase）──
-library(Biobase)
-eset <- ExpressionSet(assayData = exprMatrix_dense)
-# AUCell_buildRankings(eset) 等同于 AUCell_buildRankings(exprs(eset))
-
-# ── 格式四：SummarizedExperiment / SingleCellExperiment ──
-library(SummarizedExperiment)
-sce <- SummarizedExperiment(assays = list(counts = exprMatrix_dense))
-# 默认使用第一个 assay，多个 assay 时用 assayName 指定
+exprMatrix <- as(exprMatrix, "dgCMatrix")  # 转稀疏，省内存
+mouseBrainExprMatrix <- exprMatrix
+save(mouseBrainExprMatrix, file = "exprMatrix_MouseBrain.RData")  # ★ 缓存，下次直接 load
+dim(mouseBrainExprMatrix)                  # 19972 基因 × 3005 细胞
 ```
 
-## 输入要求
+> **缓存提醒**：上面 `save()` 后，以后只需 `load("exprMatrix_MouseBrain.RData")`，不必重复下载。
+> 按本项目规范，下载与缓存文件放 `data/`（已被 `.gitignore` 忽略），不入库。
 
-| 要求 | 说明 |
-|------|------|
-| 行 = 基因，列 = 细胞 | AUCell 的标准方向 |
-| `rownames` 必须存在 | 用于与基因集中的基因名匹配 |
-| `colnames` 必须存在 | 用于结果矩阵的列名 |
-| 行名、列名必须唯一 | 重复名会导致计算错误或 `cbind()` 失败 |
-| 值为非负数 | 原始计数、UMI、TPM 均可，**无需提前归一化** |
+## 2.2 子采样 5000 基因（与官方一致，加速演示）
 
-```{r seurat-extract}
-# 实际场景：从 Seurat 对象提取
-# exprMat <- GetAssayData(seurat_obj, slot = "counts", assay = "RNA")
-# # 已经是 dgCMatrix，可直接传入
+```{r subsample}
+# load("exprMatrix_MouseBrain.RData")   # 复用缓存时取消注释
+set.seed(333)                            # 官方固定的随机种子
+exprMatrix <- mouseBrainExprMatrix[sample(rownames(mouseBrainExprMatrix), 5000), ]
+dim(exprMatrix)                          # 5000 基因 × 3005 细胞
+```
+
+> 注：只取 5000 基因纯为加速教学；真实分析用全矩阵即可。官方特意用这个"有噪声"的子集来展示 AUCell 的鲁棒性。
+
+## 2.3 输入格式要求（通用）
+
+```{r input-reqs, eval=TRUE}
+# AUCell 接受多种表达数据类型（S4 自动分发，见 Ch4）：
+#   matrix / dgCMatrix(推荐) / ExpressionSet / SummarizedExperiment / SingleCellExperiment
+# 共同要求：行 = 基因(有行名)，列 = 细胞(有列名)，值非负；行名列名唯一。
+cat("行=基因，列=细胞；dgCMatrix 为单细胞推荐格式\n")
 ```
 
 ---
 
-# Chapter 3：基因集操作函数 {#ch3}
+# Chapter 3：基因集准备（官方脑签名）/ Gene sets {#ch3}
 
-> 源文件：`AUCell/R/aux_methods.R`、`aux_getSetNames.R`
+> 源文件：`AUCell/vignettes/AUCell.Rmd`（Line 211-244）、`AUCell/R/aux_methods.R`
+> 数据：`AUCell/inst/examples/geneSignatures.gmt`（包自带）
 
-## GeneSet vs GeneSetCollection
-
-| 对象 | 含义 | 创建方式 |
-|------|------|---------|
-| `GeneSet` | 单个基因集（一组基因 + 名称 + 元信息）| `GeneSet(genes, setName="name")` |
-| `GeneSetCollection` | 多个 GeneSet 的容器 | `GeneSetCollection(list(gs1, gs2))` 或 `getGmt()` |
-
-## 从 .gmt 文件读取（最常用）
+## 3.1 读取官方自带基因集
 
 ```{r read-gmt}
 library(GSEABase)
-
-# .gmt 格式（Tab 分隔）：
-#   基因集名称  描述  Gene1  Gene2  Gene3  ...
-
-# 读取包内自带示例文件
-gmtFile  <- system.file("examples", "geneSignatures.gmt", package = "AUCell")
+# 包自带的 .gmt（脑细胞类型签名）——用 system.file 定位，跨机器可移植
+gmtFile  <- file.path(system.file("examples", package = "AUCell"), "geneSignatures.gmt")
 geneSets <- getGmt(gmtFile)
-
-geneSets              # 打印 GeneSetCollection 摘要
-names(geneSets)       # 所有基因集名称（字符向量）
-
-# 查看单个基因集
-geneSets[["Oligodendrocyte_Cahoy"]]
-GSEABase::geneIds(geneSets[["Oligodendrocyte_Cahoy"]])  # 提取基因名
+names(geneSets)
+#> Astrocyte_Cahoy / Neuron_Cahoy / Oligodendrocyte_Cahoy
+#> Astrocyte_Lein  / Neuron_Lein  / Microglia_lavin
 ```
 
-## 手动创建基因集
+这 6 个签名的来源（官方 vignette 注明）：
 
-```{r create-genesets, eval=TRUE}
-# ── 方式 A：字符向量（单个基因集，最简单）──
-geneSet_simple <- c("Gene1", "Gene5", "Gene12", "Gene30")
-# 直接传给 calcAUC，自动包装为 list(geneSet = ...)
+- **Cahoy 大签名（>1000 基因）**：星形胶质 / 少突胶质 / 神经元（Cahoy et al., 2008）
+- **Lein**：另一组星形胶质 / 神经元小签名
+- **Lavin / Microglia**：小胶质细胞（>500 基因，bulk RNA-seq 比较得到）
 
-# ── 方式 B：命名列表（多基因集，最常用）──
-geneSets_list <- list(
-  NeuronMarkers = c("SYP", "NEFL", "MAP2", "TUBB3"),
-  AstroMarkers  = c("GFAP", "AQP4", "S100B", "VIM"),
-  OligoMarkers  = c("MBP",  "MOG",  "PLP1",  "CNP")
-)
+## 3.2 过滤到数据集中存在的基因（`subsetGeneSets`）
 
-# ── 方式 C：GSEABase GeneSet 对象 ──
-geneSet_obj <- GeneSet(
-  c("GFAP", "AQP4", "S100B"),
-  setName       = "AstrocyteSignature",
-  setIdentifier = "AS_001"
-)
-
-# ── 方式 D：GeneSetCollection 对象 ──
-gsc <- GeneSetCollection(list(
-  GeneSet(c("SYP", "MAP2"), setName = "Neuron"),
-  GeneSet(c("GFAP", "AQP4"), setName = "Astro")
-))
-
-cat("基因集列表结构：\n")
-str(geneSets_list)
-```
-
-## `nGenes()`：查看基因集大小
-
-```{r nGenes}
-# 源码：两个 S4 方法
-#   nGenes,GeneSet-method            → length(geneIds(geneSet))
-#   nGenes,GeneSetCollection-method  → 命名数值向量
-
-nGenes(geneSet_obj)   # 单个 GeneSet → 整数标量
-nGenes(geneSets)      # GeneSetCollection → 命名向量
-#   Oligodendrocyte_Cahoy  Neuron_Cahoy  ...
-#            1238              1022      ...
-```
-
-## `subsetGeneSets()`：过滤为数据集中存在的基因
-
-> ⚠️ **必做步骤**！若不过滤，`calcAUC` 会警告"XX% 的基因不在数据中"，严重时自动排除整个基因集。
+> ⚠️ 必做。基因集里的基因 ID 必须与表达矩阵行名一致；否则 AUC 多为 0。
 
 ```{r subset-genesets}
-# 内部实现：对每个基因集，取 geneIds ∩ geneNames（用 GSEABase & 运算符）
+# 源码：aux_methods.R，subsetGeneSets,GeneSetCollection-method（取交集）
+geneSets <- subsetGeneSets(geneSets, rownames(exprMatrix))
+cbind(nGenes(geneSets))   # 每个签名过滤后剩多少基因（nGenes 见 aux_methods.R）
+```
 
-available_genes    <- rownames(exprMatrix_sparse)  # 表达矩阵中的基因名
-geneSets_filtered  <- subsetGeneSets(geneSets, available_genes)
+因为我们只留了 5000 个随机基因，大部分签名基因其实不在子集里——官方借此演示 AUCell 对"噪声/不完整签名"的鲁棒性。
 
-# 对比过滤前后的基因集大小
-cbind(
-  before = nGenes(geneSets),
-  after  = nGenes(geneSets_filtered)
+## 3.3 把基因数写进名字（`setGeneSetNames`）
+
+```{r rename-genesets}
+# 源码：aux_methods.R，setGeneSetNames,GeneSetCollection-method
+geneSets <- setGeneSetNames(
+  geneSets,
+  newNames = paste(names(geneSets), " (", nGenes(geneSets), "g)", sep = "")
 )
+# 如 "Oligodendrocyte_Cahoy (XXg)"，方便后续读图
 ```
 
-## `setGeneSetNames()`：重命名基因集
+## 3.4 加入对照基因集（官方做法）
 
-```{r set-names}
-# 在名称中附加基因数（常用于绘图标签）
-newNames       <- paste0(names(geneSets_filtered),
-                         " (", nGenes(geneSets_filtered), "g)")
-geneSets_named <- setGeneSetNames(geneSets_filtered, newNames)
-names(geneSets_named)   # 新名称，如 "Oligodendrocyte_Cahoy (238g)"
+> 对照集是理解 AUC 分布的关键参照（见 Ch7）：随机集应近正态、管家集在多数细胞都活跃。
 
-# ⚠️ 约束：newNames 长度必须等于 length(geneSets)
+```{r control-genesets}
+set.seed(321)                          # 官方固定种子
+extraGeneSets <- c(
+  GeneSet(sample(rownames(exprMatrix),  50), setName = "Random (50g)"),
+  GeneSet(sample(rownames(exprMatrix), 500), setName = "Random (500g)")
+)
+
+# 管家样（housekeeping-like）：在最多细胞中检测到的高频基因里取 100 个
+countsPerGene <- apply(exprMatrix, 1, function(x) sum(x > 0))
+extraGeneSets <- c(extraGeneSets,
+  GeneSet(sample(names(countsPerGene)[which(countsPerGene > quantile(countsPerGene, probs = .95))], 100),
+          setName = "HK-like (100g)"))
+
+geneSets <- GeneSetCollection(c(geneSets, extraGeneSets))
+names(geneSets)
 ```
 
-## `getSetNames()`：正则匹配提取基因集名
+## 3.5 基因集大小经验法则
 
-```{r get-set-names}
-# 函数签名：getSetNames(aucMat, patterns, startChr="^", endChr=" |_")
-# 内部：grep(paste0(startChr, pattern, endChr), rownames(aucMat))
+| 大小 | 特点 | 建议 |
+|------|------|------|
+| < 10 基因 | AUC 易为 0，不稳 | 避免 |
+| 10–100 | 可用，方差大 | 谨慎 |
+| **100–2000** | **稳定可靠** | 推荐 |
+| > 2000 | 覆盖管家基因，特异性降 | 不建议 |
 
-# 从 AUC 结果中找出名称包含 "Oligodendrocyte" 的基因集
-# gs_oligo <- getSetNames(cells_AUC, "Oligodendrocyte")
-
-# 多个模式（向量化）
-# gs_multi <- getSetNames(cells_AUC, c("Neuron", "Oligodendrocyte"))
-```
-
-## 基因集大小建议
-
-| 基因集大小 | 特点 | 建议 |
-|-----------|------|------|
-| < 10 基因 | AUC 值不稳定，容易为 0 | 避免使用 |
-| 10 ~ 100 基因 | 可用，但方差大 | 谨慎使用 |
-| **100 ~ 2000 基因** | **理想范围，稳定可靠** | ✅ 推荐 |
-| > 2000 基因 | 覆盖管家基因，特异性下降 | 不建议 |
-
-> `calcAUC` 自动过滤规则（源码 `02_calcAUC.R` Line 191-203）：基因集中 **≥ 80%** 的基因不在排序中时，该基因集自动排除并输出 warning；所有基因集都 ≥ 80% 缺失时直接 `stop()`。
+> 自动过滤（源码 `02_calcAUC.R` Line 191-203）：某签名 ≥80% 基因缺失 → 自动剔除并 warning；全部 ≥80% 缺失 → 直接报错。
 
 ---
 
 # Chapter 4：Step 1 — `AUCell_buildRankings()` {#ch4}
 
-> 源文件：`AUCell/R/01_buildRankings.R`
->
-> **目的**：为每个细胞建立基因表达排序（从高到低），是整个流程的基础。
+> 源文件：`AUCell/R/01_buildRankings.R`；官方用法见 vignette Line 274
 
-## 函数签名
+## 4.1 函数签名
 
-```{r buildRankings-signature, eval=TRUE, echo=TRUE}
-# 完整签名（S4 泛型）
+```{r buildRankings-sig, eval=TRUE}
 # AUCell_buildRankings(
-#   exprMat,
-#   featureType    = "genes",
-#   plotStats      = TRUE,
-#   splitByBlocks  = FALSE,
-#   BPPARAM        = NULL,
-#   keepZeroesAsNA = FALSE,
-#   verbose        = TRUE,
-#   nCores         = NULL,   # 已废弃，改用 BPPARAM
-#   mctype         = NULL,   # 已废弃
-#   ...
+#   exprMat,                  # 表达矩阵（见 Ch2 支持的类型）
+#   featureType   = "genes",  # 行类型名（仅命名，不影响计算）
+#   plotStats     = TRUE,     # ★ 绘制每细胞基因检测数分布（用于定 aucMaxRank）
+#   splitByBlocks = FALSE,    # 分块处理（dgCMatrix 自动 TRUE）
+#   BPPARAM       = NULL,     # 并行后端
+#   keepZeroesAsNA = FALSE,   # 零值是否设为 NA（默认随机排末尾）
+#   verbose       = TRUE
 # )
-cat("函数签名已展示（注释形式，无需运行）\n")
+cat("签名已展示\n")
 ```
 
-## S4 方法分发（输入类型自动识别）
+## 4.2 S4 方法分发（输入类型自动识别）
 
-| `exprMat` 类型 | 内部行为 |
-|---------------|---------|
-| `matrix` | 默认方法，`splitByBlocks` 遵从参数设置 |
-| `dgCMatrix`（稀疏）| **强制** `splitByBlocks=TRUE`，启用块处理 |
-| `ExpressionSet` | 自动调用 `Biobase::exprs(exprMat)` |
-| `SummarizedExperiment` / `SingleCellExperiment` | 自动调用 `assay(exprMat)` 或 `assays(exprMat)[[assayName]]` |
+| `exprMat` 类型 | 行为 |
+|---------------|------|
+| `matrix` | 默认；`splitByBlocks` 遵从参数 |
+| `dgCMatrix`（稀疏）| **自动** `splitByBlocks=TRUE` |
+| `ExpressionSet` | 自动 `Biobase::exprs()` 提取 |
+| `SummarizedExperiment`/`SingleCellExperiment` | 自动 `assay()`（多 assay 用 `assayName`）|
 
-## 参数详解
+## 4.3 关键参数
 
-### `featureType = "genes"`
-
-```{r param-featureType, eval=TRUE}
-# 类型：character（长度1）
-# 作用：给排序对象命名（仅用于提示信息，不影响任何计算）
-# 重要性：★☆☆
-
-# ATAC-seq 时可改为 featureType="peaks"
-# 默认保持 "genes" 即可
+```{r buildRankings-params, eval=TRUE}
+# plotStats = TRUE  ★必看
+#   绘制"每个细胞检测到的基因数"分布（箱线 + 直方），并打印分位数。
+#   用途：确认大多数细胞的基因数 ≥ 你打算用的 aucMaxRank（见 Ch5）。
+#   仅要图不建排名：plotGeneCount(exprMatrix)
+#
+# keepZeroesAsNA = FALSE
+#   FALSE：零表达基因随机排在排名末尾（默认，结果有极小随机性）
+#   TRUE ：零值设 NA，不参与 AUC（更严格）
+#
+# splitByBlocks / BPPARAM
+#   大数据并行：splitByBlocks=TRUE + BPPARAM=BiocParallel::MulticoreParam(n)
+cat("plotStats 必看：据此定 aucMaxRank\n")
 ```
 
-### `plotStats = TRUE`
+## 4.4 内部算法（调度层，不挖内核）
 
-> ⭐ **必看！** 用于确定合适的 `aucMaxRank`
-
-```{r param-plotStats}
-# 调用内部 plotGeneCount() 函数，输出：
-#   上图：基因检测数的箱线图（水平方向）
-#   下图：各细胞基因检测数的直方图
-#   控制台：min / 1% / 5% / 10% / 50% / 100% 六个分位数
-#
-# 关键用法：
-#   看 50% 分位数（中位数），例如 = 3000 个基因
-#   → aucMaxRank 应远小于 3000（如默认 5% × 3000 = 150）
+```{r buildRankings-internal, eval=TRUE}
+# .AUCell_buildRankings()（01_buildRankings.R）：
+#   1. 表达矩阵取负 (-exprMat)，使"高表达 = 小排名值(rank 1)"
+#   2. DelayedMatrixStats::colRanks(..., ties.method="random")
+#      → 每列(细胞)独立排名；同值基因随机打散（零值因此随机散在末尾）
+#   3. 封装为 aucellResults 对象（assay = "ranking"）
+cat("取负 → colRanks(随机打平) → 封装 ranking\n")
 ```
 
-### `splitByBlocks = FALSE`（稀疏矩阵自动 TRUE）
+## 4.5 官方真实数据示例
 
-```{r param-splitByBlocks}
-# 作用：是否将矩阵分块后再处理（可与 BPPARAM 配合并行）
-# 内部实现：DelayedArray::blockApply()，按列方向分块
-#
-# 规则：
-#   dgCMatrix 输入 → 自动强制为 TRUE（源码硬编码）
-#   matrix 输入   → 遵从用户设置（默认 FALSE）
-#
-# 什么时候手动设 TRUE？
-#   输入是 matrix 但数据量很大，想启用并行
+```{r buildRankings-run, fig.width=5, fig.height=5}
+# 官方 vignette 写法：plotStats=TRUE 会画出真实的基因检测数分布
+cells_rankings <- AUCell_buildRankings(exprMatrix, plotStats = TRUE)
+cells_rankings                 # aucellResults，dim = 5000 基因 × 3005 细胞
+# save(cells_rankings, file = "cells_rankings.RData")  # 排名可缓存复用
 ```
 
-### `BPPARAM = NULL`（并行参数）
+## 4.6 返回值
 
-```{r param-BPPARAM}
-library(BiocParallel)
-
-# NULL   → 单核串行（默认）
-# 多核（Linux/Mac 推荐）
-bpparam_mc  <- MulticoreParam(workers = 4)
-
-# 多进程（Windows 兼容）
-bpparam_sp  <- SnowParam(workers = 4)
-
-# 仅在 splitByBlocks=TRUE 时生效
-```
-
-### `keepZeroesAsNA = FALSE`
-
-```{r param-keepZeroesAsNA, eval=TRUE}
-# FALSE（默认）：
-#   零值基因被随机打乱，排在末尾（ties.method="random"）
-#   → 轻微随机性，每次运行结果可能微小差异
-#   → 适合大多数场景
-#
-# TRUE（严格模式）：
-#   零值基因排名设为 NA，不参与 AUC 计算
-#   → 更保守：只统计真正有表达的基因
-#   → 适合数据质量高、零值可信的情况
-#
-# 建议：大多数情况保持 FALSE（默认）
-cat("参数说明已展示\n")
-```
-
-## 内部算法（源码级）
-
-```{r buildRankings-internals, eval=TRUE}
-# .AUCell_buildRankings() 内部步骤：
-#
-#   Step 1: 将表达矩阵取负号（-exprMat）
-#           → 使 colRanks() 的排序变成"高表达 = 低排名值（rank=1）"
-#
-#   Step 2: 调用 DelayedMatrixStats::colRanks(-exprMat, ties.method="random")
-#           → 对每一列（细胞）独立计算各行（基因）的排名
-#           → ties.method="random"：相同值的基因排名随机打散
-#
-#   Step 3: 将排名矩阵封装为 aucellResults 对象
-#           → assays[["ranking"]] 中存储排名矩阵
-
-cat("内部算法说明（注释形式）\n")
-```
-
-## 返回值结构
-
-```{r buildRankings-return}
-# 类型：aucellResults（S4，继承自 SummarizedExperiment）
-# 内容：
-#   assayNames(result) → "ranking"
-#   dim(result)        → c(nGenes, nCells)
-#   rownames(result)   → 基因名
-#   colnames(result)   → 细胞 ID
-#
-# 访问方式：
-#   getRanking(result)         ← 推荐，有类型检查
-#   assay(result, "ranking")   ← 直接访问（SE 方式）
-```
-
-## 完整使用示例
-
-```{r buildRankings-demo, fig.height=6}
-# 构建模拟数据
-set.seed(42)
-nGenes_demo <- 5000
-nCells_demo <- 300
-
-exprMat_demo <- matrix(
-  rpois(nGenes_demo * nCells_demo, lambda = 0.3),
-  nrow = nGenes_demo, ncol = nCells_demo,
-  dimnames = list(paste0("Gene", 1:nGenes_demo),
-                  paste0("Cell", 1:nCells_demo))
-)
-exprMat_sp <- as(exprMat_demo, "dgCMatrix")
-
-# ── 基础用法（必看 plotStats 图！）──
-cells_rankings <- AUCell_buildRankings(
-  exprMat   = exprMat_sp,
-  plotStats = TRUE,    # 观察基因检测数分布 → 确定 aucMaxRank
-  verbose   = TRUE
-)
-
-# 查看结果
-cells_rankings
-dim(cells_rankings)              # c(5000, 300)
-assayNames(cells_rankings)       # "ranking"
-getRanking(cells_rankings)[1:3, 1:4]   # 前3基因 × 前4细胞的排名值
-
-# ── 生产场景（并行 + 静默）──
-# cells_rankings <- AUCell_buildRankings(
-#   exprMat   = exprMat_sp,
-#   plotStats = FALSE,
-#   BPPARAM   = MulticoreParam(8),
-#   verbose   = FALSE
-# )
+```{r buildRankings-return, eval=TRUE}
+# aucellResults 对象（继承 SummarizedExperiment）：
+#   assayNames → "ranking"；dim → 基因 × 细胞
+#   取裸矩阵：getRanking(cells_rankings)
+cat("返回 aucellResults(ranking)；getRanking() 取矩阵\n")
 ```
 
 ---
 
 # Chapter 5：Step 2 — `AUCell_calcAUC()` {#ch5}
 
-> 源文件：`AUCell/R/02_calcAUC.R`
->
-> **目的**：对每个细胞、每个基因集，计算 AUC 活跃度分数（值域 0~1）。
+> 源文件：`AUCell/R/02_calcAUC.R`；官方用法见 vignette Line 320
 
-## 函数签名
+## 5.1 函数签名
 
-```{r calcAUC-signature, eval=TRUE}
+```{r calcAUC-sig, eval=TRUE}
 # AUCell_calcAUC(
-#   geneSets,                                      # 基因集（多种格式）
-#   rankings,                                      # buildRankings 的输出
+#   geneSets,                                     # 基因集（4 种格式，见 5.4）
+#   rankings,                                     # buildRankings 的输出
 #   nCores     = 1,
-#   normAUC    = TRUE,                             # 是否归一化 AUC 最大值为1
-#   aucMaxRank = ceiling(0.05 * nrow(rankings)),   # ★ 最关键参数
+#   normAUC    = TRUE,                            # AUC 最大值归一化为 1
+#   aucMaxRank = ceiling(0.05 * nrow(rankings)),  # ★ 最关键参数
 #   verbose    = TRUE
 # )
-cat("函数签名已展示\n")
+cat("签名已展示\n")
 ```
 
-## S4 方法分发（基因集格式）
-
-| 输入类型 | 内部转换 | 结果基因集名 |
-|---------|---------|------------|
-| `character` 向量 | `list(geneSet = 输入)` | 自动命名为 `"geneSet"` |
-| `named list` | 直接使用 | 沿用 list 的 names |
-| `GeneSet` | 提取 `geneIds` + `setName` | 沿用 `setName` |
-| `GeneSetCollection` | `GSEABase::geneIds(geneSets)` | 沿用各 `setName` |
-
-## 参数详解
-
-### ★ `aucMaxRank`（最关键参数）
+## 5.2 ★ `aucMaxRank`（最关键参数）
 
 ```{r param-aucMaxRank, eval=TRUE}
-# 默认值：ceiling(0.05 * nrow(rankings))  → 基因总数的 5%
-
-# 含义：只看排名前 aucMaxRank 位的基因，在这个"窗口"里统计目标基因的密度
-
-# 几何意义：AUC 积分的 x 轴截止点（上限）
-#   aucMaxRank 越大 → 窗口更宽 → 对低表达基因更敏感，噪声也更多
-#   aucMaxRank 越小 → 窗口更窄 → 更严格，假阳性更少，但可能漏信号
-
-# ── 三步选择法 ──
-# Step A: 运行 buildRankings(plotStats=TRUE)，看基因检测数分布图
-# Step B: 找到大多数细胞的基因检测数（如 50% 分位数 = 2000 基因）
-# Step C: aucMaxRank 应该远小于 2000（如 5% × 2000 = 100）
-
-nGenes_total     <- 5000   # 总基因数
-aucMaxRank_5pct  <- ceiling(0.05 * nGenes_total)   # 250（推荐默认）
-aucMaxRank_10pct <- ceiling(0.10 * nGenes_total)   # 500（宽松）
-aucMaxRank_1pct  <- ceiling(0.01 * nGenes_total)   # 50（严格）
-cat("5%  → aucMaxRank =", aucMaxRank_5pct,  "\n")
-cat("10% → aucMaxRank =", aucMaxRank_10pct, "\n")
-cat("1%  → aucMaxRank =", aucMaxRank_1pct,  "\n")
-
-# ⚠️ 警告机制（源码 Line 108-111）：
-#   aucMaxRank < 300 → 输出 warning（提醒基因数可能太少）
-#   aucMaxRank <= 0  → stop()
+# 含义：只看"排名前 aucMaxRank 位"的基因，统计目标基因集在其中的富集（AUC 积分上界）
+# 默认：基因总数的 5%（官方 vignette §1.2 原话）：
+#   - 只取前 5% 可加速、并减少排名底部大量并列零值带来的噪声
+#   - 对"多数细胞表达很多基因"的数据（如过滤过的数据），可调大此值
+#   - 怎么定：看 Ch4 plotStats 的直方图，确保多数细胞基因数 ≥ aucMaxRank
+#
+# 警告（源码 02_calcAUC.R Line 108-111）：aucMaxRank<300 会 warning；<=0 报错
+nGenes_total <- 5000
+cat("5% →", ceiling(0.05 * nGenes_total),
+    " | 10% →", ceiling(0.10 * nGenes_total), "\n")
 ```
 
-### `normAUC = TRUE`
+## 5.3 其余参数
 
-```{r param-normAUC, eval=TRUE}
-# TRUE（默认，.AUC.geneSet_norm）：
-#   maxAUC = 理论最大面积（所有目标基因排在最前面时）
-#   → AUC ∈ [0, 1]，不同大小的基因集可直接比较  ✅ 推荐
-#
-# FALSE（.AUC.geneSet_old）：
-#   maxAUC = aucThreshold × n目标基因（简单乘积）
-#   → 较大的基因集倾向于有更高绝对值  ❌ 不建议用于比较
-cat("normAUC 说明已展示\n")
+```{r calcAUC-other, eval=TRUE}
+# normAUC = TRUE（默认，.AUC.geneSet_norm）：AUC∈[0,1]，不同大小基因集可比 ✅
+# normAUC = FALSE（.AUC.geneSet_old）：不归一化，大基因集偏高，不建议比较
+# nCores：并行核数（多核更推荐用 AUCell_run 的 BPPARAM）
+cat("normAUC 默认 TRUE（归一化到 [0,1]）\n")
 ```
 
-## 内部计算流程
+## 5.4 基因集的 4 种输入格式（官方 example 写法）
 
-```{r calcAUC-internals, eval=TRUE}
-# .AUCell_calcAUC() 执行顺序（02_calcAUC.R）：
-#
-#   1. 验证输入
-#      - geneSets 必须是 named list
-#      - 移除空基因集（length <= 0）
-#      - 验证 rankings 含 "ranking" assay
-#      - 调用 getRanking() 提取裸矩阵
-#
-#   2. 选择 AUC 计算函数
-#      normAUC=TRUE  → .AUC.geneSet_norm
-#      normAUC=FALSE → .AUC.geneSet_old
-#
-#   3. 对每个基因集执行（以 .AUC.geneSet_norm 为例）：
-#      a. 去重：geneSet <- unique(geneSet)
-#      b. 过滤：只保留在 rownames(rankings) 中的基因
-#      c. 提取：gSetRanks <- rankings[geneSet, ]
-#      d. 计算 maxAUC（理论最大面积）
-#      e. apply(gSetRanks, 2, .auc, aucMaxRank, maxAUC)
-#         → 对每个细胞（列）调用 .auc()
-#
-#   4. 过滤：排除缺失基因 ≥ 80% 的基因集（输出 warning）
-#   5. 移除辅助列（missing / nGenes）
-#   6. 封装为 aucellResults（assay = "AUC"）
-cat("内部流程说明已展示\n")
+> 源码：`02_calcAUC.R` 的 4 个 S4 方法；示例取自 `inst/examples/example_AUCell_calcAUC.R`
+
+```{r calcAUC-formats}
+# 取两个签名里的基因做演示
+oligoGenes <- geneIds(geneSets[["Oligodendrocyte_Cahoy (XXg)"]])  # 名字含基因数，按实际改
+
+# a) 字符向量（单基因集，自动命名 "geneSet"）
+# AUCell_calcAUC(oligoGenes, cells_rankings)
+
+# b) 命名列表（最常用）
+# AUCell_calcAUC(list(oligo = oligoGenes), cells_rankings)
+
+# c) GeneSet 对象（GSEABase）
+# AUCell_calcAUC(GeneSet(oligoGenes, setName="oligo"), cells_rankings)
+
+# d) GeneSetCollection（本手册就用它，见下）
+cat("4 种输入：character / list / GeneSet / GeneSetCollection\n")
 ```
 
-## 返回值结构
+## 5.5 内部计算（调度层）
 
-```{r calcAUC-return}
-# 类型：aucellResults（S4）
-# 内容：
-#   assayNames(result) → "AUC"
-#   dim(result)        → c(nGeneSets, nCells)
-#   rownames(result)   → 基因集名称
-#   colnames(result)   → 细胞 ID
-#   值域：[0, 1]（normAUC=TRUE 时）
-#
-# 访问：
-#   getAUC(cells_AUC)  ← 提取 AUC 矩阵（推荐）
+```{r calcAUC-internal, eval=TRUE}
+# .AUCell_calcAUC()（02_calcAUC.R）：
+#   1. 校验 geneSets(named list)、提取 getRanking(rankings)
+#   2. 按 normAUC 选 .AUC.geneSet_norm / _old
+#   3. 每个基因集：去重→过滤到数据中存在的基因→提取排名子矩阵
+#      → 对每个细胞(列)调用 .auc()（梯形积分，见附录A）
+#   4. 剔除 ≥80% 基因缺失的基因集 → 封装 aucellResults(assay="AUC")
+cat("校验 → 选积分函数 → 逐基因集逐细胞 .auc → 封装 AUC\n")
 ```
 
-## 完整使用示例
+## 5.6 官方真实数据示例
 
-```{r calcAUC-demo}
-# 准备示例基因集
-set.seed(1)
-geneSets_demo <- list(
-  SignatureA = sample(paste0("Gene", 1:5000), 100),
-  SignatureB = sample(paste0("Gene", 1:5000),  50),
-  SignatureC = paste0("Gene", 1:30)
-)
-
-# ── 基础调用（明确指定 aucMaxRank）──
-cells_AUC <- AUCell_calcAUC(
-  geneSets   = geneSets_demo,
-  rankings   = cells_rankings,
-  aucMaxRank = ceiling(0.05 * nrow(cells_rankings)),
-  normAUC    = TRUE,
-  verbose    = TRUE
-)
-
-# 查看结果
-cells_AUC
-dim(cells_AUC)          # c(3, 300)
-assayNames(cells_AUC)   # "AUC"
-
-# 提取 AUC 矩阵
-auc_matrix <- getAUC(cells_AUC)
-auc_matrix[, 1:5]       # 前 5 个细胞的 AUC 值
-
-# 分布统计
-round(t(apply(auc_matrix, 1, summary)), 3)
-
-# ── 对比不同 aucMaxRank ──
-cells_AUC_5pct  <- AUCell_calcAUC(geneSets_demo, cells_rankings,
-                                   aucMaxRank = ceiling(0.05 * nrow(cells_rankings)))
-cells_AUC_10pct <- AUCell_calcAUC(geneSets_demo, cells_rankings,
-                                   aucMaxRank = ceiling(0.10 * nrow(cells_rankings)))
-
-cat("5%  均值：", round(rowMeans(getAUC(cells_AUC_5pct)), 4), "\n")
-cat("10% 均值：", round(rowMeans(getAUC(cells_AUC_10pct)), 4), "\n")
-# 较大的 aucMaxRank → AUC 均值通常更高
+```{r calcAUC-run, warning=FALSE}
+cells_AUC <- AUCell_calcAUC(geneSets, cells_rankings)   # 默认 aucMaxRank=5%
+# save(cells_AUC, file = "cells_AUC.RData")
+cells_AUC                       # aucellResults，dim = 9 基因集 × 3005 细胞
+getAUC(cells_AUC)[1:3, 1:4]     # 取 AUC 矩阵看一角
 ```
 
 ---
 
 # Chapter 6：一步法 — `AUCell_run()` {#ch6}
 
-> 源文件：`AUCell/R/aux_AUCell_run_byBlocks.R`
->
-> **等价于**：`AUCell_buildRankings()` + `AUCell_calcAUC()` 的组合，但不保存中间排序结果。
+> 源文件：`AUCell/R/aux_AUCell_run_byBlocks.R`；官方用法见 vignette Line 252
 
-## 函数签名
+## 6.1 等价关系
 
-```{r run-signature, eval=TRUE}
+```{r run-equiv, eval=TRUE}
+# AUCell_run(exprMat, geneSets) 等价于：
+#   cells_rankings <- AUCell_buildRankings(exprMat, plotStats=FALSE)
+#   cells_AUC      <- AUCell_calcAUC(geneSets, cells_rankings)
+# 区别：run() 用 DelayedArray::blockApply 分块串联，不保存中间排名，省内存。
+cat("AUCell_run = buildRankings + calcAUC（分块、不存中间排名）\n")
+```
+
+## 6.2 签名与并行
+
+```{r run-sig, eval=TRUE}
 # AUCell_run(
-#   exprMat,
-#   geneSets,
-#   featureType    = "genes",
-#   keepZeroesAsNA = FALSE,
-#   normAUC        = TRUE,
-#   aucMaxRank     = ceiling(0.05 * nrow(exprMat)),   # ★ 注意：基于 exprMat 行数
-#   BPPARAM        = NULL,
-#   assayName      = NULL,   # 仅 SE 对象需要
-#   ...
+#   exprMat, geneSets,
+#   featureType="genes", keepZeroesAsNA=FALSE, normAUC=TRUE,
+#   aucMaxRank = ceiling(0.05*nrow(exprMat)),   # ★ 注意：基于 exprMat 行数
+#   BPPARAM = NULL, assayName = NULL            # SE 对象用 assayName 指定 assay
 # )
-cat("函数签名已展示\n")
+cat("并行：BPPARAM = BiocParallel::MulticoreParam(5)\n")
 ```
 
-## 内部实现（源码级）
-
-```{r run-internals, eval=TRUE}
-# .AUCell_run()（块调度器，Line 120-138）：
-#
-#   collected <- blockApply(
-#     DelayedArray(exprMat),          # 转为 DelayedArray
-#     FUN   = .AUCell_run_internal,   # 每块的处理函数
-#     grid  = colAutoGrid(exprMat),   # 自动按列方向分块
-#     BPPARAM = BPPARAM               # 并行参数
-#   )
-#   do.call(cbind, collected)         # 所有块的 AUC 结果合并
-#
-# .AUCell_run_internal()（单块，Line 141-148）：
-#   ranked <- AUCell_buildRankings(block, splitByBlocks=FALSE, plotStats=FALSE)
-#   AUCell_calcAUC(geneSets, ranked, normAUC, aucMaxRank, verbose=FALSE)
-cat("内部实现说明已展示\n")
-```
-
-## 分步 vs 一步法选择
-
-| 场景 | 推荐方式 |
-|------|---------|
-| 探索不同基因集（rankings 重复使用）| `buildRankings → calcAUC × N`（保存 rankings 一次）|
-| 基因集固定，追求内存效率 | `AUCell_run()`（不保存中间排序）|
-| 超大矩阵（>10万细胞）+ 内存有限 | `AUCell_run()` + `BPPARAM` 并行 |
-| 需要检查每细胞基因数分布 | `buildRankings(plotStats=TRUE)` 分步 |
-
-## 完整使用示例
+## 6.3 官方真实数据示例（vignette 主推路径）
 
 ```{r run-demo}
-# ── 方式 A：分步（探索阶段推荐）──
-cells_rankings_A <- AUCell_buildRankings(
-  exprMat_sp, plotStats = TRUE, verbose = TRUE
-)
-cells_AUC_A <- AUCell_calcAUC(
-  geneSets_demo, cells_rankings_A,
-  aucMaxRank = ceiling(0.05 * nrow(cells_rankings_A))
-)
+# 官方 vignette §1 的主调用
+cells_AUC <- AUCell_run(exprMatrix, geneSets)
+# 并行：cells_AUC <- AUCell_run(exprMatrix, geneSets, BPPARAM=BiocParallel::MulticoreParam(5))
+```
 
-# ── 方式 B：一步法（生产流程推荐）──
-cells_AUC_B <- AUCell_run(
-  exprMat    = exprMat_sp,
-  geneSets   = geneSets_demo,
-  aucMaxRank = ceiling(0.05 * nrow(exprMat_sp)),  # 注意：基于 exprMat 行数
-  normAUC    = TRUE,
-  verbose    = FALSE
-)
+## 6.4 分步 vs 一步：怎么选
 
-# ── 并行一步法（大数据集）──
-# cells_AUC_parallel <- AUCell_run(
-#   exprMat    = exprMat_sp,
-#   geneSets   = geneSets_demo,
-#   aucMaxRank = 500,
-#   BPPARAM    = MulticoreParam(8)
-# )
-
-# ── SummarizedExperiment 输入 ──
-# sce <- SingleCellExperiment(assays = list(counts = exprMat_sp))
-# cells_AUC_sce <- AUCell_run(sce, geneSets_demo, assayName = "counts")
-
-# 验证两种方式结果一致
-all.equal(getAUC(cells_AUC_A), getAUC(cells_AUC_B), tolerance = 0.01)
+| 场景 | 推荐 |
+|------|------|
+| 探索多个基因集（排名复用）| 分步：buildRankings 存一次，多次 calcAUC |
+| 基因集固定、省内存 | `AUCell_run()` |
+| 超大矩阵 + 内存紧 | `AUCell_run()` + `BPPARAM` 并行 |
+| 要看 plotStats 定 aucMaxRank | 分步（`buildRankings(plotStats=TRUE)`）|
 
 ---
 
 # Chapter 7：Step 3 — 阈值探索与细胞分配 {#ch7}
 
-> 源文件：`03_exploreThresholds.R`、`priv_auc.assignmnetThreshold_v6.R`、`aux_AUCell_assignCells.R`、`aux_binarizeAUC.R`、`aux_thresholds.R`
->
-> **目的**：确定每个基因集的"活跃 / 非活跃"分界点，并将细胞分类。
+> 源文件：`AUCell/R/03_exploreThresholds.R`、`priv_auc.assignmnetThreshold_v6.R`、`aux_AUCell_assignCells.R`
+> 官方用法见 vignette Line 347-386
 
-## `AUCell_exploreThresholds()`
+## 7.1 函数与参数
 
-### 函数签名
-
-```{r exploreThresholds-signature, eval=TRUE}
+```{r explThr-sig, eval=TRUE}
 # AUCell_exploreThresholds(
 #   cellsAUC,
-#   thrP              = 0.01,
-#   smallestPopPercent = 0.25,
-#   plotHist          = TRUE,
-#   densAdjust        = 2,
-#   assignCells       = FALSE,
-#   nBreaks           = 100,
-#   nCores            = 1,
-#   verbose           = TRUE
+#   thrP               = 0.01,   # 异常值概率：nCells 中期望 thrP*nCells 个假阳性
+#   smallestPopPercent = 0.25,   # 最小预期活性群体比例（过滤假双峰）
+#   plotHist           = TRUE,   # ★ 绘制每个签名的 AUC 直方图 + 候选阈值线
+#   densAdjust         = 2,      # 密度曲线平滑度
+#   assignCells        = FALSE,  # 是否返回通过阈值的细胞列表
+#   nBreaks            = 100, nCores = 1, verbose = TRUE
 # )
-cat("函数签名已展示\n")
+cat("签名已展示\n")
 ```
 
-### 参数详解
+## 7.2 四种候选阈值（源码 priv_auc.assignmnetThreshold_v6.R）
 
-```{r param-thrP, eval=TRUE}
-# thrP = 0.01（异常值概率阈值）
-# ──────────────────────────────────────────────────────────────────────────
-# 含义：在 nCells 个细胞中，期望有 thrP × nCells 个假阳性
-# 例：thrP=0.01，nCells=3000 → 期望约 30 个假阳性通过阈值
-#
-# 调整方向：
-#   thrP 越小 → 阈值越高 → 更严格，假阳性少，但可能漏真实信号
-#   thrP 越大 → 阈值越低 → 更宽松，灵敏度高，假阳性多
-#
-# Global_k1 和 L_k2 使用方式：
-#   阈值 = qnorm(1 - thrP/nCells, mean, sd)
-#
-# smallestPopPercent = 0.25（最小预期群体比例）
-# ──────────────────────────────────────────────────────────────────────────
-# 含义：预期活跃细胞群体至少占全部细胞的 25%
-# 作用：过滤掉太小的"假双峰"（< 25% 细胞的小峰不被视为真实分界）
-# 稀有细胞类型（如 <5%）→ 需要降低此值，如 smallestPopPercent=0.05
-cat("参数说明已展示\n")
-```
-
-```{r param-densAdjust, eval=TRUE}
-# densAdjust = 2（密度曲线平滑度）
-# ──────────────────────────────────────────────────────────────────────────
-# 对应 density() 函数的 adjust 参数
-# densAdjust < 1 → 更锯齿，捕捉细节峰（但噪声峰也增多）
-# densAdjust = 1 → 标准平滑
-# densAdjust = 2 → 更平滑（默认），减少假双峰
-# densAdjust > 3 → 过度平滑，可能错过真实双峰
-cat("densAdjust 说明已展示\n")
-```
-
-## 四种阈值方法详解
-
-> 源码：`priv_auc.assignmnetThreshold_v6.R`
-
-```{r threshold-methods, eval=TRUE}
-# 对每个基因集，代码计算以下 4 种阈值：
-
-# ── 方法 1: minimumDens（蓝色，粗实线）──
-#   原理：计算 AUC 分布的核密度曲线，找到局部最小值（拐点）
-#   实现：diff(sign(diff(density$y)))  → 找二阶导符号变化
-#   适用：双峰分布（两群细胞之间有明显谷底）
-#   跳过条件（skipSmallDens）：
-#     零值太多（前10% AUC ≈ 0）
-#     拐点位于分布右侧更高的峰（避免假阳性）
-
-# ── 方法 2: L_k2（红色）—— 双分布混合模型左侧 ──
-#   原理：mixtools::normalmixEM(k=2)，取左侧（低均值）分布
-#   阈值 = qnorm(1 - thrP/nCells, mean_left, sd_left)
-#   含义：在"非活跃"群中，只有 thrP/nCells 的概率超过此值
-#   适用：明确双峰分布
-#   跳过条件（skipRed）：分布太偏斜 / 两分布高度重叠
-
-# ── 方法 3: R_k3（粉色）—— 三分布混合模型右侧 ──
-#   原理：mixtools::normalmixEM(k=3)，取右侧（高均值）分布
-#   阈值 = qnorm(thrP, mean_right, sd_right)
-#   含义：在"活跃"群中，只有 thrP 的概率低于此值
-#   适用：三峰或存在中间过渡群体的复杂分布
-
-# ── 方法 4: Global_k1（灰色）—— 全局正态分布 ──
-#   原理：将所有细胞 AUC 视为单一正态分布
-#   阈值 = qnorm(1 - thrP/nCells, mean_all, sd_all)
-#   通常作为"兜底"：双峰不明确时才被选中
-#   注意：在大多数情况下会被其他方法覆盖
-
-# ── selected 选择规则 ──
-#   优先选择最高的"非全局"阈值（minimumDens / L_k2 / R_k3 之一）
-#   所有非全局方法都不可用时，使用 Global_k1
-cat("四种方法说明已展示\n")
-```
-
-## 返回值结构
-
-```{r exploreThresholds-return, eval=TRUE}
-# 返回：命名列表（每个基因集一个元素）
-#
-# thresholds                          ← 顶层列表
-# └─ $SignatureA                      ← 基因集名称
-#    ├─ $aucThr                       ← 阈值信息
-#    │  ├─ $selected   → 数值标量：自动选定的阈值
-#    │  ├─ $thresholds → 数据框：所有方法的阈值及对应细胞数
-#    │  │     method        threshold  nCells
-#    │  │     minimumDens   0.15       120
-#    │  │     L_k2          0.12       145
-#    │  │     R_k3          0.18        89
-#    │  │     Global_k1     0.20        45
-#    │  └─ $comment    → 字符串：说明选择了哪种方法及原因
-#    └─ $assignment                   ← 仅 assignCells=TRUE 时存在
-#          字符向量：通过阈值的细胞名称
-cat("返回值结构已展示\n")
-```
-
-## 直方图分布形态解读
-
-| 形态 | 外观 | 解读 | 策略 |
+| 方法 | 颜色 | 思路 | 适用 |
 |------|------|------|------|
-| **双峰**（理想）| 左低峰 + 右高峰，明显谷底 | 活跃 vs 非活跃两群清晰 | `minimumDens` 通常最佳 |
-| **单峰带右尾** | 左侧主峰，右侧长尾 | 少数高活跃细胞 | `L_k2` 或 `Global_k1` |
-| **高 AUC 偏右** | 几乎所有细胞 AUC 都高 | 可能是管家基因集 | ⚠️ 慎用，换更特异的基因集 |
-| **平坦随机** | AUC 均匀分布 0~0.1 | 基因集对此数据无区分能力 | 放弃或替换基因集 |
+| `minimumDens` | 蓝（粗实线=选中）| AUC 密度曲线的谷底（拐点）| 双峰分布最佳 |
+| `L_k2` | 红 | 双分布混合模型左峰右尾 | 明确双峰 |
+| `R_k3` | 粉 | 三分布混合模型右峰左尾 | 复杂/三峰 |
+| `Global_k1` | 灰 | 全局正态异常值 | 兜底 |
 
-## 完整使用示例
+`$aucThr$selected` 默认取**最高的非全局阈值**（减少假阳性）。⚠️ 官方强调：自动阈值仅供参考，**强烈建议人工看直方图后调整**。
 
-```{r exploreThresholds-demo, fig.height=4}
-set.seed(333)   # 固定种子（混合模型初始化有随机性）
+## 7.3 官方真实数据示例（关键：真实分布形态）
 
-cells_assignment <- AUCell_exploreThresholds(
-  cellsAUC           = cells_AUC,
-  thrP               = 0.01,
-  smallestPopPercent = 0.25,
-  plotHist           = TRUE,     # ★ 仔细看每个直方图！
-  densAdjust         = 2,
-  assignCells        = TRUE,
-  verbose            = TRUE
-)
-
-# ── 查看结果结构 ──
-str(cells_assignment, max.level = 3)
-names(cells_assignment)                           # 基因集名称
-
-# ── 提取单个基因集 ──
-gs_result <- cells_assignment[["SignatureA"]]
-gs_result$aucThr$selected                         # 自动选定的阈值
-gs_result$aucThr$thresholds                       # 所有方法对比
-length(gs_result$assignment)                      # 有多少细胞被认为"活跃"
-
-# ── 批量提取（辅助函数）──
-thresholds_vec  <- getThresholdSelected(cells_assignment)   # 命名数值向量
-assignments_list <- getAssignments(cells_assignment)        # 命名列表
-thresholds_vec
-```
-
-## 手动调整阈值：`AUCell_assignCells()`
-
-> 适用场景：查看直方图后认为自动阈值不合理，或有先验知识（如论文报告值）。
-
-```{r assignCells-demo}
-# 获取自动阈值并修改
-new_thresholds <- getThresholdSelected(cells_assignment)
-new_thresholds["SignatureA"] <- 0.20   # 手动提高，更严格
-
-# 也可以完全手动指定
-manual_thresholds <- c(SignatureA = 0.20,
-                       SignatureB = 0.15,
-                       SignatureC = 0.25)
-
-# 应用新阈值（无需重新计算 AUC）
-new_assignments <- AUCell_assignCells(
-  cellsAUC   = cells_AUC,
-  thresholds = manual_thresholds
-)
-
-# 返回值结构与 exploreThresholds 完全相同
-new_assignments$SignatureA$aucThr$selected   # = 0.20（你设定的值）
-length(new_assignments$SignatureA$assignment)
-```
-
-## 二值化：`binarizeAUC()`
-
-```{r binarizeAUC-demo}
-# 将连续 AUC 矩阵转为 0/1 二值矩阵
-# 内部实现：getThresholdSelected → 对每个基因集 AUC > threshold → 1，否则 0
-# → reshape2::melt() 长转宽 → table() 转为矩阵
-
-binary_matrix <- binarizeAUC(
-  auc        = cells_AUC,
-  thresholds = cells_assignment
-)
-
-dim(binary_matrix)      # nCells × nGeneSets
-head(binary_matrix)     # 0 或 1
-
-# 各基因集活跃细胞数
-colSums(binary_matrix)
-```
-
----
-
-# Chapter 8：`aucellResults` 对象操作 {#ch8}
-
-> 源文件：`class_aucellResults.R`、`aux_orderAUC.R`、`aux_updateAucellResults.R`
-
-## 类定义
-
-```{r class-def, eval=TRUE}
-# aucellResults 是 AUCell 的核心 S4 类：
-#   extends: SummarizedExperiment
-#   额外槽: nGenesDetected（每细胞基因数的分位数）
-#
-# 含两种 assay 之一：
-#   "ranking"  ← buildRankings() 输出
-#   "AUC"      ← calcAUC() 输出
-cat("类定义说明已展示\n")
-```
-
-## 提取核心矩阵
-
-```{r extract-matrix}
-# ── getAUC()：提取 AUC 矩阵 ──
-auc_mat <- getAUC(cells_AUC)
-class(auc_mat)     # "matrix"
-dim(auc_mat)       # c(nGeneSets, nCells)
-
-# ── getRanking()：提取排名矩阵 ──
-rank_mat <- getRanking(cells_rankings)
-dim(rank_mat)      # c(nGenes, nCells)
-
-# ⚠️ 错误用法（交叉调用会报错）：
-# getAUC(cells_rankings)    → "This object does not contain an AUC matrix."
-# getRanking(cells_AUC)     → 对称的错误信息
-```
-
-## 标准维度操作
-
-```{r dim-ops}
-dim(cells_AUC)          # c(3, 300)
-nrow(cells_AUC)         # 3（基因集数）
-ncol(cells_AUC)         # 300（细胞数）
-rownames(cells_AUC)     # 基因集名称
-colnames(cells_AUC)     # 细胞 ID
-assayNames(cells_AUC)   # "AUC"
-```
-
-## 子集操作
-
-```{r subset-ops}
-# ── 按行（基因集）──
-cells_AUC[1, ]                              # 第一个基因集（返回 aucellResults）
-cells_AUC["SignatureA", ]                   # 按名称
-cells_AUC[c("SignatureA","SignatureB"), ]   # 多个基因集
-
-# ── 按列（细胞）──
-cells_AUC[, 1:100]
-cells_AUC[, c("Cell1", "Cell5")]
-
-# ── 同时子集 ──
-cells_AUC[1:2, 1:100]
-
-# ── 对 ranking 对象同样适用 ──
-cells_rankings[1:10, 1:5]
-```
-
-## `cbind()`：合并多样本
-
-```{r cbind-demo, fig.show='hide'}
-# 约束（源码严格验证）：
-#   1. 所有对象同类型（同为 "AUC" 或 "ranking"）
-#   2. 行数相同（同样的基因集或基因）
-#   3. 行名相同（顺序可不同，名称必须一致）
-#   4. 列名不能重复（细胞 ID 必须唯一）
-
-set.seed(1)
-exprMat_b1 <- matrix(rpois(5000*150, 0.3), 5000, 150,
-  dimnames = list(paste0("Gene",1:5000), paste0("B1_Cell",1:150)))
-exprMat_b2 <- matrix(rpois(5000*150, 0.3), 5000, 150,
-  dimnames = list(paste0("Gene",1:5000), paste0("B2_Cell",1:150)))
-
-auc_b1 <- AUCell_run(as(exprMat_b1,"dgCMatrix"), geneSets_demo, verbose=FALSE)
-auc_b2 <- AUCell_run(as(exprMat_b2,"dgCMatrix"), geneSets_demo, verbose=FALSE)
-
-# 合并
-auc_combined <- cbind(auc_b1, auc_b2)
-dim(auc_combined)      # c(3, 300)
-colnames(auc_combined)[c(1, 151)]   # "B1_Cell1", "B2_Cell1"
-
-# ── 常见错误 ──
-# cbind(auc_b1, auc_b2[1:2,])  → ERROR：行数不同
-# cbind(cells_rankings, auc_b1) → ERROR：类型不同
-```
-
-## `orderAUC()`：按相似性排序基因集
-
-```{r orderAUC-demo}
-# 内部算法：
-#   1. 过滤 SD=0 的基因集
-#   2. Spearman 相关系数矩阵：cor(t(AUC), method="spearman")
-#   3. 距离矩阵：1 - cor
-#   4. 层次聚类：hclust(dist, method="ward.D2")
-#   5. 动态剪枝：dynamicTreeCut::cutreeDynamic()
-#   6. 按聚类标签降序 + 树状图顺序排列
-
-sorted_gs_names  <- orderAUC(cells_AUC)
-cells_AUC_sorted <- cells_AUC[sorted_gs_names, ]   # 排序后的 AUC 对象
-```
-
-## `updateAucellResults()`：升级旧版对象
-
-```{r update-demo}
-# 将 AUCell < 1.17 的 matrixWrapper 对象升级为现代 aucellResults
-# old_auc <- readRDS("old_aucell_v1.rds")
-# new_auc <- updateAucellResults(old_auc, objectType = "AUC")
-
-# objectType：
-#   "AUC"     → 含 "AUC" assay 的 aucellResults
-#   "ranking" → 含 "ranking" assay 的 aucellResults
-```
-
-## `show()` 打印摘要
-
-```{r show-demo}
-# 输入对象名直接打印摘要
-cells_AUC
-# 输出示例：
-# class: aucellResults
-# dim: 3 300
-# assay names: AUC
-# AUC (Gene sets x Cells):
-#              Cell1  Cell2  ...
-# SignatureA   0.041  0.063  ...
-# SignatureB   0.055  0.031  ...
-# SignatureC   0.112  0.088  ...
-
----
-
-# Chapter 9：可视化函数 {#ch9}
-
-> 源文件：`aux_plotGeneCount.R`、`aux_AUCell_plotHist.R`、`aux_AUCell_plotTSNE.R`、`priv_plots.R`、`aux_plotEmb_rgb.R`
-
-## `plotGeneCount()`：基因检测数分布
-
-```{r plotGeneCount-demo, fig.height=5}
-# 函数签名：plotGeneCount(exprMat, plotStats=TRUE, verbose=TRUE)
-#
-# 内部：colSums(exprMat > 0) → 每个细胞非零基因数
-# 对稀疏矩阵：Matrix::colSums()
-#
-# 返回（invisible）：命名数值向量（6个分位数）
-#   names: "min" / "1%" / "5%" / "10%" / "50%" / "100%"
-
-gene_stats <- plotGeneCount(exprMat_sp, plotStats = TRUE)
-gene_stats
-# → 中位数 = X 个基因 → aucMaxRank 建议 = X × 5%
-```
-
-## `AUCell_plotHist()`：AUC 分布直方图
-
-```{r plotHist-demo, fig.height=4}
-# 函数签名：
-#   AUCell_plotHist(
-#     cellsAUC,                       # aucellResults 或 matrix
-#     aucThr   = max(cellsAUC),       # 阈值线位置（默认最大值）
-#     nBreaks  = 100,                 # 直方图柱数
-#     onColor  = "dodgerblue4",       # 通过阈值的柱颜色
-#     offColor = "slategray2",        # 未通过阈值的柱颜色
-#     ...                             # 传给 hist()
-#   )
-#
-# 内部逻辑（.auc_plotHist）：
-#   1. hist() 计算分组（不立即绘图）
-#   2. 右边界 < aucThr → offColor；否则 → onColor
-#   3. 重新 plot(hist_obj, col=bar_colors)
-
-# ── 单个基因集 ──
-par(mfrow = c(1, 3))
-AUCell_plotHist(cells_AUC["SignatureA", ], aucThr = 0.10,
-                main = "SignatureA", nBreaks = 50)
-abline(v = 0.10, col = "red", lwd = 2)   # 手动画阈值线
-
-AUCell_plotHist(cells_AUC["SignatureB", ], aucThr = 0.08,
-                main = "SignatureB", nBreaks = 50)
-
-AUCell_plotHist(cells_AUC["SignatureC", ], aucThr = 0.15,
-                main = "SignatureC", nBreaks = 50)
-
-# ── 所有基因集批量绘制 ──
-# par(mfrow = c(1, nrow(cells_AUC)))
-# AUCell_plotHist(cells_AUC,
-#                 aucThr = getThresholdSelected(cells_assignment))
-```
-
-## `AUCell_plotTSNE()`：综合 t-SNE 可视化
-
-### 函数签名与核心参数
-
-```{r plotTSNE-signature, eval=TRUE}
-# AUCell_plotTSNE(
-#   tSNE,                   # ★ 2D 嵌入坐标（matrix，行名=细胞ID）
-#   exprMat      = NULL,    # 表达矩阵（仅"expression"图需要）
-#   cellsAUC     = NULL,    # AUC 矩阵
-#   thresholds   = NULL,    # NULL→自动计算 / list→exploreThresholds结果 / numeric→直接使用
-#   reorderGeneSets = FALSE,# TRUE→先按相似性排序基因集
-#   cex          = 1,       # 点大小
-#   alphaOn      = 1,       # 活跃细胞透明度（1=不透明）
-#   alphaOff     = 0.2,     # 非活跃细胞透明度（0.2=较淡）
-#   borderColor  = adjustcolor("lightgray", alpha.f = 0.1),
-#   offColor     = "lightgray",
-#   plots = c("histogram","binaryAUC","AUC","expression"),  # 图类型组合
-#   exprCols = c("goldenrod1","darkorange","brown"),  # 表达量渐变色
-#   asPNG    = FALSE,       # TRUE→保存PNG+HTML报告
-#   ...
-# )
-cat("函数签名已展示\n")
-```
-
-### `plots` 参数的四种图类型
-
-| 类型 | 内部函数 | 说明 |
-|------|---------|------|
-| `"histogram"` | `.auc_plotHist()` | AUC 分布直方图，含阈值线 |
-| `"binaryAUC"` | `.auc_plotBinaryTsne()` | t-SNE 上二值着色（蓝=活跃，灰=非活跃）|
-| `"AUC"` | `.auc_plotGradientTsne()` | t-SNE 上连续 AUC 渐变色 |
-| `"expression"` | `.auc_plotGradientTsne()` | t-SNE 上该基因集关键 TF 表达量（需 `exprMat`）|
-
-### `thresholds` 参数的三种传入方式
-
-```{r plotTSNE-thresholds, eval=TRUE}
-# 方式 1：NULL → 自动调用 AUCell_exploreThresholds() 计算
-# 方式 2：exploreThresholds() 的完整输出（推荐，避免重复计算）
-# 方式 3：命名数值向量（手动阈值）
-cat("三种方式：NULL / list结果 / 数值向量\n")
-```
-
-### 完整使用示例
-
-```{r plotTSNE-demo, fig.height=5}
-# 生成模拟 t-SNE 坐标（实际用真实降维结果）
-set.seed(42)
-tSNE_demo <- matrix(
-  rnorm(300 * 2), nrow = 300, ncol = 2,
-  dimnames = list(paste0("Cell", 1:300), c("tSNE_1", "tSNE_2"))
-)
-
-# ── 常用组合：直方图 + 二值 t-SNE ──
-par(mfrow = c(nrow(cells_AUC), 2))
-AUCell_plotTSNE(
-  tSNE       = tSNE_demo,
-  cellsAUC   = cells_AUC,
-  thresholds = cells_assignment,    # 传入已计算的阈值（避免重复计算）
-  plots      = c("histogram", "binaryAUC"),
-  alphaOn    = 1,
-  alphaOff   = 0.05,
-  cex        = 0.8
-)
-
-# ── 仅连续 AUC 渐变（不需要阈值）──
-# par(mfrow = c(1, nrow(cells_AUC)))
-# AUCell_plotTSNE(tSNE=tSNE_demo, cellsAUC=cells_AUC, plots="AUC")
-```
-
-## `plotEmb_rgb()`：3 基因集 RGB 编码可视化
-
-```{r plotRGB-demo, fig.height=5}
-# 函数签名：
-#   plotEmb_rgb(
-#     aucMat,                    # AUC 矩阵（matrix 或 aucellResults）
-#     embedding,                 # 2D 坐标（行名=细胞ID）
-#     geneSetsByCol,             # 基因集 → R/G/B 通道映射
-#     aucType        = "AUC",    # "AUC"（连续）或 "binary"（二值）
-#     aucMaxContrast = 0.8,      # AUC ÷ aucMaxContrast → 颜色强度
-#     offColor       = "#c0c0c030",  # 全"关闭"细胞颜色（带透明度）
-#     showPlot       = TRUE,
-#     showLegend     = TRUE
-#   )
-
-# ── geneSetsByCol 两种格式 ──
-# 格式 A：字符向量（按 R/G/B 顺序）
-geneSetsByCol_vec  <- c("SignatureA", "SignatureB", "SignatureC")
-
-# 格式 B：命名列表（明确指定通道）
-geneSetsByCol_list <- list(
-  red   = "SignatureA",    # → 红色通道
-  green = "SignatureB",    # → 绿色通道
-  blue  = "SignatureC"     # → 蓝色通道
-)
-
-# 格式 C：分组（多个基因集映射到同一通道）
-geneSetsByCol_group <- list(
-  red   = c("SignatureA", "SignatureB"),  # 取平均 AUC → 红色
-  green = "SignatureC"
-)
-
-# ── aucMaxContrast 调整颜色对比度 ──
-# AUC ÷ aucMaxContrast 后 clip 到 [0,1]
-# 0.8 → AUC ≥ 0.8 时颜色饱和（最亮）
-# 0.3 → 整体颜色更明亮（适合 AUC 值普遍偏低的数据）
-
-par(mfrow = c(1, 2))
-auc_mat <- getAUC(cells_AUC)
-
-# 连续模式
-plotEmb_rgb(
-  aucMat         = auc_mat,
-  embedding      = tSNE_demo,
-  geneSetsByCol  = geneSetsByCol_list,
-  aucType        = "AUC",
-  aucMaxContrast = 0.8,
-  main           = "RGB（连续 AUC）"
-)
-
-# 二值模式
-plotEmb_rgb(
-  aucMat        = auc_mat,
-  embedding     = tSNE_demo,
-  geneSetsByCol = geneSetsByCol_list,
-  aucType       = "binary",
-  main          = "RGB（二值）"
-)
-```
-
-## `plotTsne_cellProps()`：细胞元数据着色
-
-```{r plotCellProps-demo, fig.height=4}
-# 函数签名：
-#   plotTsne_cellProps(
-#     tSNE, cellInfo,           # 细胞元数据（data.frame，行=细胞）
-#     colVars    = NULL,        # 分类变量颜色映射列表
-#     gradientCols = c("yellow","orange","red"),
-#     showLegend = TRUE
-#   )
-#
-# 变量类型自动判断：
-#   character / factor → 分类着色（rainbow 或 colVars 自定义）
-#   numeric            → 渐变着色
-
-cellInfo_demo <- data.frame(
-  CellType = sample(c("Neuron","Astro","Oligo"), 300, replace=TRUE),
-  nGenes   = round(rnorm(300, mean=2000, sd=500)),
-  row.names = paste0("Cell", 1:300)
-)
-
-colVars <- list(
-  CellType = c(Neuron="orange", Astro="cornflowerblue", Oligo="forestgreen")
-)
-
-par(mfrow = c(1, 2))
-plotTsne_cellProps(
-  tSNE     = tSNE_demo,
-  cellInfo = cellInfo_demo,
-  colVars  = colVars,
-  showLegend = TRUE
-)
-```
-
----
-
-# Chapter 10：完整端到端示例 {#ch10}
-
-## 10.1 准备数据
-
-```{r e2e-data}
-library(AUCell); library(GSEABase); library(Matrix)
-set.seed(123)
-
-# ── 构建模拟单细胞表达矩阵（5 种细胞类型）──
-nCells_per_type <- 60
-cell_types      <- c("Neuron","Astro","Oligo","Microglia","OPC")
-nTypes          <- length(cell_types)
-nGenes_total    <- 1500
-
-# 每种细胞类型有 50 个特异性标记基因
-marker_genes <- lapply(seq_len(nTypes), function(i)
-  paste0("Gene", ((i-1)*50+1):(i*50)))
-names(marker_genes) <- cell_types
-
-# 基础矩阵：低表达背景
-exprMat_e2e <- matrix(
-  rpois(nGenes_total * (nCells_per_type * nTypes), lambda = 0.2),
-  nrow = nGenes_total,
-  ncol = nCells_per_type * nTypes,
-  dimnames = list(
-    paste0("Gene", 1:nGenes_total),
-    paste0(rep(cell_types, each = nCells_per_type), "_",
-           rep(1:nCells_per_type, nTypes))
-  )
-)
-
-# 各细胞类型的标记基因增加到高表达
-for (i in seq_len(nTypes)) {
-  cell_cols <- grep(paste0("^", cell_types[i], "_"), colnames(exprMat_e2e))
-  gene_rows <- which(rownames(exprMat_e2e) %in% marker_genes[[i]])
-  exprMat_e2e[gene_rows, cell_cols] <- rpois(
-    length(gene_rows) * length(cell_cols), lambda = 5
-  )
-}
-exprMat_e2e_sp <- as(exprMat_e2e, "dgCMatrix")
-cat("表达矩阵：", nrow(exprMat_e2e_sp), "基因 ×",
-    ncol(exprMat_e2e_sp), "细胞\n")
-
-# ── 构建基因集 ──
-all_geneSets <- GeneSetCollection(lapply(seq_len(nTypes), function(i)
-  GeneSet(marker_genes[[i]], setName = paste0(cell_types[i], "_markers"))))
-
-# 过滤为数据集中存在的基因
-all_geneSets <- subsetGeneSets(all_geneSets, rownames(exprMat_e2e_sp))
-cat("各基因集大小：\n"); print(cbind(nGenes = nGenes(all_geneSets)))
-```
-
-## 10.2 Step 1：构建排序
-
-```{r e2e-step1, fig.height=5}
-cells_rankings_e2e <- AUCell_buildRankings(
-  exprMat   = exprMat_e2e_sp,
-  plotStats = TRUE,     # ★ 必看！观察基因检测数分布
-  verbose   = TRUE
-)
-# 根据图中 50% 分位数决定 aucMaxRank
-cat("排序维度：", dim(cells_rankings_e2e), "\n")
-```
-
-## 10.3 Step 2：计算 AUC
-
-```{r e2e-step2}
-aucMaxRank_e2e <- ceiling(0.10 * nrow(cells_rankings_e2e))
-cat("使用 aucMaxRank =", aucMaxRank_e2e, "\n")
-
-cells_AUC_e2e <- AUCell_calcAUC(
-  geneSets   = all_geneSets,
-  rankings   = cells_rankings_e2e,
-  aucMaxRank = aucMaxRank_e2e,
-  normAUC    = TRUE,
-  verbose    = TRUE
-)
-
-# AUC 分布统计
-auc_e2e <- getAUC(cells_AUC_e2e)
-cat("\nAUC 值统计（各基因集）：\n")
-print(round(t(apply(auc_e2e, 1, summary)), 3))
-```
-
-## 10.4 Step 3：探索阈值
-
-```{r e2e-step3, fig.height=4}
+```{r explThr-run, warning=FALSE, fig.width=7, fig.height=7}
 set.seed(333)
-cells_assignment_e2e <- AUCell_exploreThresholds(
-  cellsAUC           = cells_AUC_e2e,
-  thrP               = 0.01,
-  smallestPopPercent = 0.25,
-  plotHist           = TRUE,   # ★ 仔细看每个直方图
-  assignCells        = TRUE
-)
-
-# 查看自动阈值与分配数量
-auto_thr <- getThresholdSelected(cells_assignment_e2e)
-n_active <- sapply(getAssignments(cells_assignment_e2e), length)
-data.frame(threshold = round(auto_thr, 4),
-           n_active_cells = n_active)
+par(mfrow = c(3, 3))   # 9 个签名一屏
+cells_assignment <- AUCell_exploreThresholds(cells_AUC, plotHist = TRUE, assign = TRUE)
 ```
 
-## 10.5 可视化
+读这九张图（官方 vignette §2 的解读，全是真实分布）：
 
-```{r e2e-viz, fig.height=5}
-# 模拟 UMAP 坐标（实际用真实降维）
-set.seed(99)
-umap_coords <- matrix(
-  rnorm(ncol(exprMat_e2e_sp) * 2),
-  nrow = ncol(exprMat_e2e_sp), ncol = 2,
-  dimnames = list(colnames(exprMat_e2e_sp), c("UMAP_1","UMAP_2"))
-)
+- **Oligodendrocyte**：漂亮的**双峰**——多数细胞低 AUC + 一群明显高 AUC。`minimumDens`（谷底）是理想阈值。这就是"标记基因集 + 5–30% 细胞"的典型。
+- **Neuron**：神经元占比高，分布开始**接近管家基因**的样子（大部分细胞都偏活跃）。
+- **Microglia**：细胞很少，分布近正态但**右侧有离群高值**。
+- **Random (50g)**：小随机集，很多细胞 AUC=0；**Random (500g)** 更接近正态——可作"无信号"参照。
+- **HK-like**：管家样，几乎所有细胞都活跃，**无法区分细胞**（反面教材）。
 
-# 图 A：直方图
+## 7.4 查看与提取阈值
+
+```{r explThr-extract}
+# 某签名的全部候选阈值
+cells_assignment$Oligodendrocyte_Cahoy$aucThr$thresholds
+# 自动选中的阈值
+cells_assignment$Oligodendrocyte_Cahoy$aucThr$selected
+# 通过阈值的细胞（assign=TRUE 时）
+oligoCells <- cells_assignment$Oligodendrocyte_Cahoy$assignment
+length(oligoCells)
+
+# 批量提取（辅助函数，源码 aux_thresholds.R）
+selectedThresholds <- getThresholdSelected(cells_assignment)
+# assignments      <- getAssignments(cells_assignment)
+```
+
+## 7.5 手动调整阈值（官方做法）
+
+```{r explThr-manual}
+# 看图后认为某阈值不合适 → 画直方图、定新阈值
+geneSetName <- grep("Oligodendrocyte_Cahoy", rownames(cells_AUC), value = TRUE)
+AUCell_plotHist(cells_AUC[geneSetName, ], aucThr = 0.25)
+abline(v = 0.25, col = "red")
+
+# 按新阈值重新分配（无需重算 AUC）
+newCells <- names(which(getAUC(cells_AUC)[geneSetName, ] > 0.25))
+length(newCells)
+
+# 或用 AUCell_assignCells() 批量套用自定义阈值向量（源码 aux_AUCell_assignCells.R）
+# AUCell_assignCells(cells_AUC, thresholds = c(Oligodendrocyte_Cahoy = 0.25, ...))
+```
+
+---
+
+# Chapter 8：结果对象 + 可视化 / Objects & plots {#ch8}
+
+> 源文件：`class_aucellResults.R`、`aux_AUCell_plotHist.R`、`aux_AUCell_plotTSNE.R`
+> 官方用法见 vignette Line 429-492；t-SNE 坐标用包自带 `cellsTsne.RData`
+
+## 8.1 aucellResults 对象操作
+
+```{r object-ops, eval=TRUE}
+# getAUC(x) / getRanking(x)   取裸矩阵（取错会报错）
+# dim/nrow/ncol/rownames/colnames   标准维度操作
+# x[基因集, 细胞]              子集（继承 SummarizedExperiment）
+# cbind(x1, x2)               按细胞合并多批次（行需相同、细胞 ID 不重复）
+# orderAUC(x)                 按相似性给基因集排序（aux_orderAUC.R）
+cat("getAUC/getRanking/子集/cbind/orderAUC\n")
+```
+
+## 8.2 载入官方自带 t-SNE 坐标
+
+```{r load-tsne, fig.width=4, fig.height=4}
+# 包自带的真实 t-SNE（基于全表达矩阵预先算好，不是 5000 子集）
+load(file.path(system.file("examples", package = "AUCell"), "cellsTsne.RData"))
+cellsTsne <- cellsTsne$Y          # 3005 × 2 坐标矩阵
+plot(cellsTsne, pch = 16, cex = .3)
+```
+
+## 8.3 用 AUC 给 t-SNE 着色（官方代码）
+
+```{r tsne-color, fig.width=7, fig.height=6}
+selectedThresholds <- getThresholdSelected(cells_assignment)
 par(mfrow = c(2, 3))
-AUCell_plotHist(cells_AUC_e2e, aucThr = auto_thr)
+for (geneSetName in names(selectedThresholds)[1:6]) {
+  nBreaks <- 5
+  colorPal_Neg <- grDevices::colorRampPalette(c("black", "blue", "skyblue"))(nBreaks)
+  colorPal_Pos <- grDevices::colorRampPalette(c("pink", "magenta", "red"))(nBreaks)
 
-# 图 B：二值 t-SNE
+  passThreshold <- getAUC(cells_AUC)[geneSetName, ] > selectedThresholds[geneSetName]
+  if (sum(passThreshold) > 0) {
+    aucSplit  <- split(getAUC(cells_AUC)[geneSetName, ], passThreshold)
+    cellColor <- c(
+      setNames(colorPal_Neg[cut(aucSplit[[1]], breaks = nBreaks)], names(aucSplit[[1]])),
+      setNames(colorPal_Pos[cut(aucSplit[[2]], breaks = nBreaks)], names(aucSplit[[2]])))
+    plot(cellsTsne, main = geneSetName, sub = "Pink/red 通过阈值",
+         col = cellColor[rownames(cellsTsne)], pch = 16)
+  }
+}
+```
+
+## 8.4 `AUCell_plotTSNE()`：一站式综合图
+
+```{r plotTSNE}
+# 综合套件：plots 可选 "histogram"/"binaryAUC"/"AUC"/"expression"
+selectedThresholds["Neuron_Cahoy (XXg)"] <- 0.25   # 按需手调（名字按实际）
 par(mfrow = c(2, 3))
-AUCell_plotTSNE(
-  tSNE       = umap_coords,
-  cellsAUC   = cells_AUC_e2e,
-  thresholds = cells_assignment_e2e,
-  plots      = "binaryAUC",
-  cex        = 0.6, alphaOff = 0.05
-)
-
-# 图 C：RGB 叠加（前3个基因集）
-gs_names <- rownames(cells_AUC_e2e)
-plotEmb_rgb(
-  aucMat        = auc_e2e,
-  embedding     = umap_coords,
-  geneSetsByCol = list(red=gs_names[1], green=gs_names[2], blue=gs_names[3]),
-  aucType        = "AUC",
-  aucMaxContrast = 0.8,
-  main           = "三基因集 RGB 叠加"
-)
+AUCell_plotTSNE(tSNE = cellsTsne, exprMat = exprMatrix,
+                cellsAUC = cells_AUC[1:2, ], thresholds = selectedThresholds)
 ```
 
-## 10.6 保存结果
+---
 
-```{r e2e-save}
-saveRDS(cells_AUC_e2e,         "cells_AUC.rds")
-saveRDS(cells_assignment_e2e,  "cells_assignment.rds")
-write.csv(getAUC(cells_AUC_e2e), "AUC_matrix.csv")
+# Chapter 9：效度验证 + 为什么用 AUCell {#ch9}
+
+> 源文件 / 数据：vignette Line 494-557 + 包自带 `mouseBrain_cellLabels.tsv`
+
+## 9.1 混淆矩阵：AUCell 分配 vs 已知细胞类型（真实验证）
+
+> 这是本手册最有说服力的一步——用论文给出的"真实细胞类型标签"检验 AUCell 的分配。
+
+```{r confusion}
+# 包自带的真实细胞类型标签（Zeisel 原文）
+cellLabelsFile <- file.path(system.file("examples", package = "AUCell"),
+                            "mouseBrain_cellLabels.tsv")
+cellLabels <- read.table(cellLabelsFile, row.names = 1, header = TRUE, sep = "\t")
+
+# 每个签名分配到的细胞 × 它们的真实类型
+cellTypeNames <- unique(cellLabels[, "level1class"])
+confMatrix <- t(sapply(cells_assignment[c(1, 4, 2, 5, 3, 6:9)],
+  function(x) table(cellLabels[x$assignment, ])[cellTypeNames]))
+colnames(confMatrix) <- cellTypeNames
+confMatrix[is.na(confMatrix)] <- 0
+confMatrix
 ```
 
-## 10.7 常见问题 Q&A
+解读要点（官方注释）：
 
-```{r e2e-faq, eval=TRUE}
-# Q1: AUC 全是 0 或接近 0？
-# → 检查基因 ID 是否匹配
-sum(marker_genes[["Neuron"]] %in% rownames(exprMat_e2e_sp))
-# 应该 > 0，且比例越高越好
-#
-# → 检查 aucMaxRank 是否太小（看 plotGeneCount 图）
+- 对角线高 = 特异性好（如 Oligodendrocyte 签名主要命中真实少突胶质细胞）。
+- Interneurons 与 pyramidal 都属"神经元"。
+- 部分被判为少突胶质的细胞可能是 doublet（双细胞）——这是数据本身的已知问题，不是 AUCell 的错。
 
-# Q2: 直方图单峰，无分界？
-# → 该基因集对此数据无区分能力
-# → 尝试 subsetGeneSets() 减少背景基因，或换更特异的基因集
+## 9.2 为什么用 AUCell（而非直接算均值）
 
-# Q3: 多样本/批次处理？
-# → 分批 calcAUC，再 cbind() 合并（见 Ch8）
-# → 不要混用不同数据集的 rankings（排名是细胞内相对的）
+```{r why-aucell, eval=TRUE}
+# 直接对签名基因取表达均值的问题：reads 多的细胞(技术/生物原因)在几乎所有
+# 签名上都偏高 → 需要先做文库大小归一化。
+# AUCell 因"逐细胞内部排名"自动校正文库大小，且独立于数据单位
+# (raw counts / TPM / UMI 都行)。官方 vignette §"Why AUCell" 用同一数据做了
+# 均值着色 vs AUC 着色的对比图，AUC 的细胞类型分群明显更干净。
+cat("AUCell：逐细胞排名 → 自动校正文库大小，免归一化\n")
+```
 
-# Q4: 与 Seurat 整合？
-# library(Seurat)
-# exprMat_seurat <- GetAssayData(seurat_obj, slot = "counts")
-# cells_AUC_s    <- AUCell_run(exprMat_seurat, all_geneSets)
-# for (gs in rownames(cells_AUC_s)) {
-#   seurat_obj[[gs]] <- getAUC(cells_AUC_s)[gs, colnames(seurat_obj)]
-# }
+---
+
+# Chapter 10：速查表 + FAQ {#ch10}
+
+## 10.1 函数速查
+
+```{r quick-ref, eval=TRUE}
+ref <- data.frame(
+  函数 = c("AUCell_buildRankings()", "AUCell_calcAUC()", "AUCell_run()",
+           "AUCell_exploreThresholds()", "AUCell_assignCells()",
+           "getAUC()/getRanking()", "getThresholdSelected()/getAssignments()",
+           "AUCell_plotHist()", "AUCell_plotTSNE()",
+           "subsetGeneSets()/nGenes()/setGeneSetNames()", "orderAUC()"),
+  关键参数 = c("plotStats★, splitByBlocks, BPPARAM, keepZeroesAsNA",
+               "aucMaxRank★, normAUC", "aucMaxRank★, BPPARAM, assayName",
+               "thrP, plotHist, assignCells, smallestPopPercent",
+               "thresholds", "—", "—",
+               "aucThr, nBreaks", "tSNE, cellsAUC, thresholds, plots",
+               "geneNames / newNames", "auc"),
+  返回 = c("aucellResults(ranking)", "aucellResults(AUC)", "aucellResults(AUC)",
+           "list(aucThr+assignment)", "list", "matrix", "named vec / list",
+           "hist", "图+list", "GeneSetCollection/int", "排序名向量"),
+  stringsAsFactors = FALSE
+)
+knitr::kable(ref, caption = "AUCell 函数速查（★=最关键参数）")
+```
+
+## 10.2 FAQ
+
+```{r faq, eval=TRUE}
+# Q1 AUC 全是 0？
+#   → 基因 ID 与表达矩阵行名不一致（先 subsetGeneSets 检查 nGenes）；
+#     或 aucMaxRank 太小（看 plotStats 直方图）。
+# Q2 直方图单峰没分界？
+#   → 该签名对此数据无区分力（如 HK-like），或细胞类型占比过高(如 Neuron)。
+# Q3 多样本/批次？
+#   → 各自 buildRankings 后 cbind 合并；不要混不同数据集的排名(排名是细胞内相对的)。
+# Q4 阈值怎么定？
+#   → 别盲信自动值；看直方图，双峰取谷底(minimumDens)，长尾用异常值法，必要时手调。
+# Q5 数据要不要先归一化？
+#   → 不需要。AUCell 基于排名，自动校正文库大小(见 Ch9)。
 cat("FAQ 已展示\n")
 ```
 
 ---
 
-# 附录：函数快速参考卡 {#appendix}
+# 附录 A：AUC 的积分推导（选读，超出"学习"必需深度）{#appendix-a}
 
-```{r quick-ref, eval=TRUE}
-ref <- data.frame(
-  函数 = c(
-    "AUCell_buildRankings()",
-    "AUCell_calcAUC()",
-    "AUCell_run()",
-    "AUCell_exploreThresholds()",
-    "AUCell_assignCells()",
-    "binarizeAUC()",
-    "getAUC()",
-    "getRanking()",
-    "getThresholdSelected()",
-    "getAssignments()",
-    "AUCell_plotHist()",
-    "AUCell_plotTSNE()",
-    "plotEmb_rgb()",
-    "plotGeneCount()",
-    "orderAUC()",
-    "subsetGeneSets()",
-    "nGenes()",
-    "setGeneSetNames()",
-    "cbind(aucellResults)",
-    "updateAucellResults()"
-  ),
-  关键参数 = c(
-    "exprMat, plotStats, splitByBlocks, BPPARAM, keepZeroesAsNA",
-    "geneSets, rankings, aucMaxRank★, normAUC",
-    "exprMat, geneSets, aucMaxRank★, BPPARAM, assayName",
-    "cellsAUC, thrP, smallestPopPercent, plotHist, densAdjust, assignCells",
-    "cellsAUC, thresholds",
-    "auc, thresholds",
-    "aucellResults",
-    "aucellResults",
-    "thresholds_list",
-    "thresholds_list",
-    "cellsAUC, aucThr, nBreaks, onColor, offColor",
-    "tSNE, cellsAUC, thresholds, plots, alphaOn, alphaOff",
-    "aucMat, embedding, geneSetsByCol, aucType, aucMaxContrast",
-    "exprMat, plotStats",
-    "auc",
-    "geneSets, geneNames",
-    "geneSet / GeneSetCollection",
-    "geneSets, newNames",
-    "aucellResults, ...",
-    "oldObject, objectType"
-  ),
-  返回值 = c(
-    "aucellResults (ranking)",
-    "aucellResults (AUC)",
-    "aucellResults (AUC)",
-    "named list (aucThr + assignment)",
-    "named list",
-    "binary matrix",
-    "matrix",
-    "matrix",
-    "named numeric vector",
-    "named list of cell vectors",
-    "invisible(hist list)",
-    "list + 图形",
-    "invisible(hex color vector)",
-    "named numeric (6分位数)",
-    "character vector",
-    "GeneSetCollection",
-    "integer / vector",
-    "GeneSetCollection",
-    "aucellResults（合并）",
-    "aucellResults"
-  ),
-  章节 = c("Ch4","Ch5","Ch6","Ch7","Ch7","Ch7",
-           "Ch8","Ch8","Ch7","Ch7","Ch9","Ch9",
-           "Ch9","Ch9","Ch8","Ch3","Ch3","Ch3","Ch8","Ch8"),
-  stringsAsFactors = FALSE
-)
+> 本节深入到算法内核，**仅供想理解数学细节者**；日常调用 AUCell 完全不需要读。
+> 源码：`AUCell/R/02_calcAUC.R` 的 `.auc()`（Line 275-282）与 `.AUC.geneSet_norm()`。
 
-knitr::kable(ref,
-  caption = "AUCell 函数快速参考卡（★ = 最关键参数）",
-  align   = c("l","l","l","c")
-)
+```{r appendix-auc, eval=TRUE}
+# .auc(oneRanking, aucThreshold, maxAUC)：对单个细胞、单个基因集
+#   x <- sort(目标基因里排名 < aucThreshold 的那些排名)
+#   y <- seq_along(x)                       # 累计命中数 1,2,3,...
+#   AUC = sum(diff(c(x, aucThreshold)) * y) / maxAUC   # 梯形积分 / 归一化
+#
+# 几何：x 轴=基因排名(到 aucMaxRank 截止)，y 轴=累计命中的目标基因数，
+#       折线下面积越大 → 目标基因越扎堆在排名前端 → AUC 越高。
+# 归一化分母 maxAUC = 所有目标基因都排最前时的理论最大面积(.AUC.geneSet_norm)，
+#       使 AUC ∈ [0,1]、不同大小基因集可比。
+cat("AUC = 召回曲线下的梯形面积 / 理论最大面积\n")
 ```
 
 ```{r session-info}
 sessionInfo()
-```
-```
 ```

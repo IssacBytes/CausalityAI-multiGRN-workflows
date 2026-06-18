@@ -1,49 +1,48 @@
 # AUCell workflows
 
-Learning and reproducibility workflows for AUCell (v1.25.2).
+Learning workflow for AUCell (v1.25.2), grounded entirely in the **official
+AUCell vignette + bundled data** — no fabricated/simulated matrices.
 
-Based on the official AUCell source at the root-level `AUCell` submodule
-(`aertslab/AUCell`). Reference: Aibar et al., 2017, *Nature Methods* (SCENIC).
+Reference: Aibar et al., 2017, *Nature Methods* (SCENIC); official vignette
+`vignette("AUCell")`. Source tracked as the root-level `AUCell` submodule
+(`aertslab/AUCell`).
 
 ## Files
 
-- `AUCell_完整学习手册.Rmd` — bilingual (Chinese/code) R Markdown notebook.
-  Covers the full AUCell workflow from source-code level:
-  algorithm internals, all function parameters, threshold methods, and
-  end-to-end reproducible example. Renders to HTML (floating TOC, code
-  folding) or PDF via `xelatex`.
-- `AUCell_完整学习手册.R` — plain R script version of the same material
-  (1 892 lines, 10 chapters, dense inline comments). Useful for stepping
-  through individual lines without rendering.
+- `AUCell_完整学习手册.Rmd` — 类型 A 学习稿，**唯一学习载体**。中英对照标题 +
+  中文正文。源码级讲解全部函数参数与调用调度流程，**全程使用官方真实数据**：
+  - 表达矩阵：GSE60361 小鼠脑（Zeisel et al., 2015，官方 vignette 下载）
+  - 基因集：包自带 `inst/examples/geneSignatures.gmt`（脑细胞类型签名）
+  - t-SNE / 标签：包自带 `cellsTsne.RData` / `mouseBrain_cellLabels.tsv`
+  - 导出 HTML / PDF（xelatex）供学习；逐块可测（默认 `eval=FALSE`）。
 
 ## Chapters
 
 | # | Topic |
 |---|-------|
-| 0 | Package dependencies & installation |
-| 1 | AUC algorithm internals (trapezoid integral, source-code walkthrough) |
-| 2 | Supported input formats (matrix / dgCMatrix / SCE / ExpressionSet) |
-| 3 | Gene-set operations (`nGenes`, `subsetGeneSets`, `setGeneSetNames`) |
-| 4 | `AUCell_buildRankings()` — all 7 parameters |
-| 5 | `AUCell_calcAUC()` — `aucMaxRank` deep-dive |
-| 6 | `AUCell_run()` — block-processing one-liner |
-| 7 | Threshold exploration (4 methods) + cell assignment + binarisation |
-| 8 | `aucellResults` object operations (subset, cbind, orderAUC) |
-| 9 | Visualisation (`plotHist`, `plotTSNE`, `plotEmb_rgb`) |
-| 10 | Full end-to-end example + FAQ + quick-reference table |
+| 0 | 依赖与安装 |
+| 1 | AUCell 是什么 + 三步工作流（直觉层）|
+| 2 | 准备官方数据（GSE60361 下载 + 缓存 + 子采样）|
+| 3 | 基因集准备（官方 gmt + subsetGeneSets/nGenes/setGeneSetNames + 对照集）|
+| 4 | `AUCell_buildRankings()` 逐参数（真实 plotStats 图）|
+| 5 | `AUCell_calcAUC()` 逐参数（`aucMaxRank` + 4 种基因集输入格式）|
+| 6 | 一步法 `AUCell_run()` |
+| 7 | 阈值探索（真实 oligodendrocyte 双峰 vs 随机单峰；4 种方法；手动调整）|
+| 8 | 结果对象 + 可视化（包自带真实 t-SNE 着色 + `AUCell_plotTSNE`）|
+| 9 | 效度验证（细胞标签混淆矩阵）+ 为什么用 AUCell（vs 均值）|
+| 10 | 速查表 + FAQ |
+| 附录 A | AUC 积分推导（选读，超出学习必需深度）|
+
+> 注：按项目规范（CLAUDE.md §3），学习稿只用 `.Rmd`；不再保留平行 `.R` 学习副本。
 
 ## Render
 
 ```r
-# HTML (recommended for interactive exploration)
 rmarkdown::render("workflows/AUCell/AUCell_完整学习手册.Rmd",
-                  output_format = "html_document",
-                  output_dir    = "results/AUCell")
-
-# PDF
+                  output_format = "html_document", output_dir = "results/AUCell")
 rmarkdown::render("workflows/AUCell/AUCell_完整学习手册.Rmd",
-                  output_format = "pdf_document",
-                  output_dir    = "results/AUCell")
+                  output_format = "pdf_document",  output_dir = "results/AUCell")
 ```
 
-Rendered outputs (`*.html`, `*.pdf`) are excluded by `.gitignore`.
+> 真正运行需联网下载 GSE60361（约几十 MB，首次后缓存）。渲染产物
+> (`*.html`/`*.pdf`)、`data/`、`results/` 按 `.gitignore` 不入库。
