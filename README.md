@@ -25,10 +25,10 @@ git submodule update --init --recursive
 - `UCell/`: official UCell source repository as a submodule.
 - `AUCell/`: official AUCell source repository as a submodule.
 - `ssGSEA-gpmodule/`: official ssGSEA GenePattern module as a submodule.
-- `examples/`: small runnable examples for package calls.
-- `scripts/`: batch scripts for reproducible workflows.
+- `workflows/UCell/`: UCell notebooks, scripts, and method notes.
+- `workflows/AUCell/`: AUCell workflow notes and planned scripts.
+- `workflows/ssGSEA/`: ssGSEA workflow notes and planned scripts.
 - `styles/`: shared document styling.
-- `*.Rmd`: bilingual workflow notebooks.
 
 Generated outputs are intentionally ignored:
 
@@ -68,13 +68,13 @@ In this workspace, `UCell` and `AUCell` were installed from the local submodule 
 Small official UCell example:
 
 ```powershell
-& 'F:\R-4.6.0\bin\Rscript.exe' examples\run_signature_scores.R
+& 'F:\R-4.6.0\bin\Rscript.exe' workflows\UCell\run_sample_ucell_aucell_scores.R
 ```
 
 Official Zilionis dataset workflow:
 
 ```powershell
-& 'F:\R-4.6.0\bin\Rscript.exe' scripts\run_ucell_zilionis_workflow.R
+& 'F:\R-4.6.0\bin\Rscript.exe' workflows\UCell\run_ucell_zilionis_workflow.R
 ```
 
 The first full-data run downloads `scRNAseq::ZilionisLungData()`, filters immune cells, keeps the first 5000 cells, and caches the processed object at:

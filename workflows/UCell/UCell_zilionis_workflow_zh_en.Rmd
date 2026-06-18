@@ -34,6 +34,10 @@ This notebook uses the official UCell vignette data source, `scRNAseq::ZilionisL
 ## 1. Setup
 
 ```{r setup}
+project_root <- "F:/WorkSpace/Causality+AI-multiGRN"
+knitr::opts_knit$set(root.dir = project_root)
+setwd(project_root)
+
 .libPaths(c("F:/WorkSpace/Causality+AI-multiGRN/r-lib", .libPaths()))
 
 library(UCell)

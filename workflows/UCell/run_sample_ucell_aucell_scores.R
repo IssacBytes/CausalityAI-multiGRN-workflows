@@ -1,6 +1,6 @@
 ## Minimal example for calling local UCell and AUCell packages.
 ## Run from the project root with:
-## F:/R-4.6.0/bin/Rscript.exe examples/run_signature_scores.R
+## F:/R-4.6.0/bin/Rscript.exe workflows/UCell/run_sample_ucell_aucell_scores.R
 
 .libPaths(c("F:/WorkSpace/Causality+AI-multiGRN/r-lib", .libPaths()))
 

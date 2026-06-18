@@ -1,5 +1,16 @@
 #!/usr/bin/env Rscript
 
+args <- commandArgs(trailingOnly = FALSE)
+file_arg <- "--file="
+script_arg <- args[startsWith(args, file_arg)]
+script_dir <- if (length(script_arg) > 0) {
+  dirname(normalizePath(sub(file_arg, "", script_arg[1]), winslash = "/"))
+} else {
+  getwd()
+}
+project_root <- normalizePath(file.path(script_dir, "../.."), winslash = "/")
+setwd(project_root)
+
 local_lib <- "F:/WorkSpace/Causality+AI-multiGRN/r-lib"
 .libPaths(c(local_lib, .libPaths()))
 
