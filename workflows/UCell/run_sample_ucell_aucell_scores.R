@@ -1,8 +1,10 @@
 ## Minimal example for calling local UCell and AUCell packages.
 ## Run from the project root with:
-## F:/R-4.6.0/bin/Rscript.exe workflows/UCell/run_sample_ucell_aucell_scores.R
+##   Rscript workflows/UCell/run_sample_ucell_aucell_scores.R
 
-.libPaths(c("F:/WorkSpace/Causality+AI-multiGRN/r-lib", .libPaths()))
+# 可移植 R 库路径（CLAUDE.md §5）：优先环境变量，回退项目内 r-lib/
+local_lib <- Sys.getenv("MULTIGRN_RLIB", unset = file.path(getwd(), "r-lib"))
+if (dir.exists(local_lib)) .libPaths(c(local_lib, .libPaths()))
 
 library(UCell)
 library(AUCell)

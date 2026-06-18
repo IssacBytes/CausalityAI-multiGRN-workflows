@@ -206,15 +206,14 @@ data.frame(
 
 ## 8. 当前状态与待办 / Status board
 
-| 方法 | 类型A 学习稿 | 类型B 报告稿 | 分支 | 备注 |
-|------|:---:|:---:|------|------|
-| AUCell | ✅ 官方数据版 | ⬜ 待做 | `claude-aucell-rewrite`(PR#3) | 已按数据铁律重写为 GSE60361 真实数据；旧模拟版被替换 |
-| UCell | ⬜ 待做 | 🟡 雏形 | `claude-ucell` | Zilionis 文档已在 main，需按 §4 升级到"美观报告"档 |
-| GSVA | ⚠️ 需重写 | ⬜ | `claude-gsva`(已合并) | 现 main 上是**模拟数据版**，违反数据铁律；待用 `GSVAdata`(Pickrell/Huang + c2BroadSets) 重写 |
+| 方法 | 类型A 学习稿 | 类型B 报告稿 | 备注 |
+|------|:---:|:---:|------|
+| AUCell | ✅ 官方数据 + 充实版 | ⬜ 待做 | GSE60361 真实数据；已在 main（PR#3/#6）|
+| GSVA | ✅ 官方数据 + 充实版 | ⬜ 待做 | GSVAdata(Pickrell/Huang + c2BroadSets)；只做 gsva+ssgsea；已在 main（PR#4/#6）|
+| UCell | ✅ 官方数据 + 充实版 | 🟡 雏形 | sample.matrix 真实数据；路径已按 §5 修复；workflow 雏形待按 §4 升级"美观报告"档 |
 
-**优先级**：① GSVA 学习稿按数据铁律用 `GSVAdata` 重写（与 AUCell 对齐）；② 补 AUCell↔UCell 对称缺口（AUCell 加报告稿、UCell 加学习稿）；③ 各方法报告稿。
+**三方法学习稿（类型 A）已全部完成、均官方真实数据、讲解深度对齐。** 下一步优先级：
+① 各方法**报告稿（类型 B）**——UCell 现有 workflow 升级到美观档、AUCell/GSVA 新建报告稿；
+② 跨方法对比（统一长表，§7）。
 
-**待用户决策**（阻塞项）：
-1. ~~第三个方法是 GSVA 还是 ssGSEA~~ → **已定 = GSVA 包，只做 `gsva`+`ssgsea` 两 method**（见 §1）。
-2. 跨方法对比选用的**基准公开数据集**与**基准基因集 .gmt**（建议沿用 UCell 已用的 Zilionis，以便直接对齐）。
-3. 仓库名不一致：远端 `CausalityAI-multiGRN-workflows` vs 本地路径 `Causality+AI+mulitiGRN` vs UCell 脚本里的 `Causality+AI-multiGRN`——仅影响硬编码路径，按 §5 改造后即无关，但请知悉。
+**待用户决策**：跨方法对比的**基准公开数据集**与**基准基因集 .gmt**（建议沿用 UCell 已用的 Zilionis，以便直接对齐）。
