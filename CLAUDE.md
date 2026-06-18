@@ -16,9 +16,12 @@
 |------|---------|---------|
 | **UCell** | Mann-Whitney U 统计量（基于排名）| scRNA-seq，大数据友好，支持 Seurat/SCE |
 | **AUCell** | AUC 曲线下面积（基于排名）| scRNA-seq，逐细胞活性打分 |
-| **GSVA / ssGSEA** | KS 随机游走 | bulk / 单细胞 / 微阵列 |
+| **GSVA**（含 ssGSEA）| KS 随机游走 / 富集分数 | bulk / 单细胞 / 微阵列；本项目只用 `gsva` + `ssgsea` 两个 method |
 
-> ⚠️ **第三方法待澄清**：远端 submodule 与 README 把第三个方法定为 **ssGSEA**（`GSEA-MSigDB/ssGSEA-gpmodule`），但本地源码目录是 **GSVA**（`GSVA` 包），且根目录同时存在 GSVA 与 ssGSEA 两篇文献 PDF。两者算法相关但不同。**在用户明确前，GSVA 与 ssGSEA 视为各自独立的待办方法，不要混为一谈。** 见 §8。
+> ✅ **第三方法已定（2026-06）= GSVA 包**。经查本地源码 `GSVA/R/`，GSVA 包是**四方法统一框架**（`gsva` / `ssgsea` / `plage` / `zscore`），原文 `AllClasses.R:103`："GSVA implements four single-sample gene set analysis methods: PLAGE, combined z-scores, ssGSEA, and GSVA"。统一入口 `gsva(param)`，参数对象有 `gsvaParam` / `ssgseaParam` / `plageParam` / `zscoreParam`。
+> 因此：
+> - **ssGSEA 是 GSVA 包的一个 method**，无需单独立项；远端 `ssGSEA-gpmodule` submodule（GSEA-MSigDB 的 GenePattern 独立实现）降为**历史 provenance**，不再单独写 workflow。
+> - **本项目只聚焦 `gsva` 与 `ssgsea` 两个 method**（用户只需通路/基因集分数）；`plage` 与 `zscore` **不在范围内**，学习稿中至多一句带过。
 
 用户的真实诉求分两层：
 1. **先学懂**：每个方法的源码调用方式、每个参数的含义与取值流程 —— 这样才能自己做分析。
@@ -49,9 +52,11 @@
   - ✅ 算法只讲到「**直觉 + 输入输出契约**」层面，让人知道某参数"在哪一步、起什么作用、调大调小有何后果"。
   - 🚫 **不往下走到内核**：不逐行复刻算法、不展开 C/Fortran/数值推导、不做"重写这个包"级别的源码考古。源码引用仅用于定位"参数在哪生效"，点到为止。
   - 判断准则：读者读完应能**正确调用与编排**，而非**重新实现**。
-- 形态：可逐块测试的 `.Rmd`（+ `.R` 脚本版）；`echo=TRUE`（代码即教学内容）；默认 `eval=FALSE`，模拟数据即可。**重清楚，不重排版**。
+- **载体：仅 `.Rmd`**。学习稿就是这份 `.Rmd`——逐块可测，并**导出 PDF / HTML 供学习**（这是它的主要用途）。`echo=TRUE`（代码即教学内容）；默认 `eval=FALSE`，模拟数据即可。**重清楚，不重排版**。
+- **不需要平行的 `.R` 学习副本**。`.R` 文件在本项目里一律是**测试/运行脚本**（如 Type B 的 `run_*.R`、冒烟测试），不是学习文档。学习只认 `.Rmd` → PDF/HTML。
 - 结构：函数签名 → 逐参数 → 调用/分发流程（图或表）→ 返回值结构 → 最小可跑示例 → 速查表。
 - 模板参照：`workflows/AUCell/AUCell_完整学习手册.Rmd`（其 Ch1 的积分推导略低于天花板，可降级为附录/选读，不作为后续标准）。
+  - 注：`workflows/AUCell/AUCell_完整学习手册.R` 是按旧规范产出的学习副本，**现已冗余**（按本条 `.R` 不再作学习载体），保留无害，可在后续清理中删除。
 
 ### 类型 B —— 报告稿（Report / Publication）
 **目的**：对外展示级产出——组会、论文附录、科研报告。**美观、科研风格、LaTeX 排版、可视化丰富**。
@@ -72,10 +77,9 @@
 ```
 workflows/<Method>/
   README.md                              # 索引：文件清单 + 渲染/运行命令
-  <Method>_学习手册.Rmd                  # 类型 A 学习稿
-  <Method>_学习手册.R                    # 类型 A 脚本版
+  <Method>_学习手册.Rmd                  # 类型 A 学习稿（唯一学习载体，导出 PDF/HTML）
   <Method>_<dataset>_report_zh_en.Rmd    # 类型 B 报告稿（既有 *_workflow_* 命名予以保留）
-  run_<method>_<dataset>.R               # 类型 B 批处理
+  run_<method>_<dataset>.R               # 测试/运行脚本（Type B 批处理、冒烟测试等）
 ```
 
 ---
@@ -198,13 +202,13 @@ data.frame(
 
 | 方法 | 类型A 学习稿 | 类型B 报告稿 | 分支 | 备注 |
 |------|:---:|:---:|------|------|
-| AUCell | ✅ 已完成 | ⬜ 待做 | `claude-aucell` | 学习稿 10 章已推送；Ch1 积分推导略超天花板，可降级为附录 |
+| AUCell | ✅ 已完成 | ⬜ 待做 | `claude-aucell`(已合并) | 学习稿 10 章已在 main；Ch1 积分推导略超天花板，可降级为附录 |
 | UCell | ⬜ 待做 | 🟡 雏形 | `claude-ucell` | Zilionis 文档已在 main，需按 §4 升级到"美观报告"档 |
-| GSVA / ssGSEA | ⬜ | ⬜ | `claude-gsva`? | **方法身份待用户澄清，见 §1** |
+| GSVA | 🚧 进行中 | ⬜ | `claude-gsva` | 只做 `gsva`+`ssgsea` 两 method；ssGSEA 即 GSVA 包内 method，见 §1 |
 
 **优先级**：先补齐 AUCell↔UCell 的对称缺口（AUCell 加报告稿、UCell 加学习稿并把现有文档升级到报告档），再启动第三方法。
 
 **待用户决策**（阻塞项）：
-1. 第三个方法到底是 **GSVA** 还是 **ssGSEA**？还是两个都要？这决定 submodule 与目录结构。
+1. ~~第三个方法是 GSVA 还是 ssGSEA~~ → **已定 = GSVA 包，只做 `gsva`+`ssgsea` 两 method**（见 §1）。
 2. 跨方法对比选用的**基准公开数据集**与**基准基因集 .gmt**（建议沿用 UCell 已用的 Zilionis，以便直接对齐）。
 3. 仓库名不一致：远端 `CausalityAI-multiGRN-workflows` vs 本地路径 `Causality+AI+mulitiGRN` vs UCell 脚本里的 `Causality+AI-multiGRN`——仅影响硬编码路径，按 §5 改造后即无关，但请知悉。
