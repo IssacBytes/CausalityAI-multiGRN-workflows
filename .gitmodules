@@ -1,4 +1,4 @@
-﻿[submodule "AUCell"]
+[submodule "AUCell"]
 	path = AUCell
 	url = https://github.com/aertslab/AUCell.git
 [submodule "UCell"]
