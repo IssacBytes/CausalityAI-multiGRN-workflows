@@ -21,3 +21,10 @@ results/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# GSVA source — not yet added as submodule
+GSVA/
+
+# Root-level working drafts (canonical copies live in workflows/)
+/AUCell_完整学习手册.R
+/AUCell_完整学习手册.Rmd
