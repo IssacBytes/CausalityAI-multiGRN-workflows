@@ -448,13 +448,28 @@ es_ssgsea <- gsva(ssgseaPar)
 
 # Chapter 7：官方真实数据示例 {#ch7}
 
+> **运行提示**：本章用到 Ch2 加载的数据对象（`huangArrayRMAnoBatchCommon_eset` /
+> `canonicalC2BroadSets` / `gbm_eset` / `brainTxDbSets`）。逐块测试时请**先跑 Ch2–Ch5**，
+> 或至少先跑 Ch2 的 `data(...)` 与 `canonicalC2BroadSets` 那两块。本章里用到的 GSVA/ssGSEA
+> 分数（`esmicro`/`esrnaseq`/`es_ssgsea`）已用 `if(!exists())` 守卫，没算过会就地补算。
+
 ## 7.1 跨平台一致性：微阵列 vs RNA-seq（kcdf 实证）
 
 > 官方 vignette §"Quantification of pathway activity"：同一批样本两种平台，验证 GSVA 通路分数跨平台一致。
 > 这是 GSVA "通路层面的分数比基因层面更稳健" 这一卖点的硬证据。
 
 ```{r e2e-crossplatform}
-# 7.1.1 两平台各算一次 GSVA（kcdf 按数据尺度选；见 Ch4.3 的 esmicro/esrnaseq）
+# 7.1.1 两平台各算一次 GSVA（kcdf 按数据尺度选）。
+# 用 if(!exists()) 守卫：若已在 Ch4.3 算过就复用，否则就地补算——
+# 这样单独跑本块也不会因 esmicro/esrnaseq 不存在而报 "object not found"。
+if (!exists("esmicro"))
+  esmicro  <- gsva(gsvaParam(huangArrayRMAnoBatchCommon_eset, canonicalC2BroadSets,
+                             minSize = 5, maxSize = 500,
+                             annotation = GSEABase::NullIdentifier()))   # 微阵列→Gaussian(默认)
+if (!exists("esrnaseq"))
+  esrnaseq <- gsva(gsvaParam(pickrellCountsArgonneCQNcommon_eset, canonicalC2BroadSets,
+                             minSize = 5, maxSize = 500, kcdf = "Poisson",
+                             annotation = GSEABase::NullIdentifier()))   # 计数→Poisson
 
 # 7.1.2 基因层面相关（先把计数转 log-CPM 才能和微阵列比）
 library(edgeR)
@@ -499,6 +514,17 @@ GSVA 分数不是随机数，它捕捉到了真实的细胞类型组成差异。
 ## 7.3 导出跨方法对比长表（对接 CLAUDE.md §7）
 
 ```{r e2e-longtable}
+# 守卫：本块用到 Ch4.3 的 esmicro 与 Ch5.3 的 es_ssgsea；没算过就地补算，
+# 保证单独跑本块也不报 "object not found"。
+if (!exists("esmicro"))
+  esmicro   <- gsva(gsvaParam(huangArrayRMAnoBatchCommon_eset, canonicalC2BroadSets,
+                              minSize = 5, maxSize = 500,
+                              annotation = GSEABase::NullIdentifier()))
+if (!exists("es_ssgsea"))
+  es_ssgsea <- gsva(ssgseaParam(huangArrayRMAnoBatchCommon_eset, canonicalC2BroadSets,
+                                minSize = 5, maxSize = 500, alpha = 0.25, normalize = TRUE,
+                                annotation = GSEABase::NullIdentifier()))
+
 to_long <- function(score_mat, method) {
   score_mat <- as.matrix(score_mat)
   data.frame(
