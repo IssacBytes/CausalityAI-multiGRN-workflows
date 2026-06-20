@@ -167,6 +167,45 @@ if (requireNamespace("ggplot2", quietly = TRUE) &&
     save_png(p2, "aucell_tsne_featureplot.png", 9, 6)
     fig_paths <- c(fig_paths, file.path(figs_dir, "aucell_tsne_featureplot.png"))
   }
+
+  ## 图3：每细胞检测基因数分布（官方 plotGeneCount；定 aucMaxRank 的依据）
+  nGenesPerCell  <- Matrix::colSums(exprMatrix > 0)
+  aucMaxRankUsed <- ceiling(0.05 * nrow(exprMatrix))      # calcAUC 默认 5%
+  p3 <- ggplot(data.frame(nGenes = nGenesPerCell), aes(nGenes)) +
+    geom_histogram(bins = 50, fill = "#5AAE61", color = NA) +
+    geom_vline(xintercept = aucMaxRankUsed, color = "#D7301F",
+               linetype = 2, linewidth = 0.6) +
+    annotate("text", x = aucMaxRankUsed, y = Inf, vjust = 1.6, hjust = -0.04,
+             label = sprintf("aucMaxRank = %d (5%%)", aucMaxRankUsed),
+             color = "#D7301F", size = 3.4, family = cjk_font) +
+    labs(title = "AUCell：每个细胞检测到的基因数",
+         subtitle = "GSE60361 小鼠脑 | 多数细胞远高于 aucMaxRank，故该参数取值安全",
+         x = "每细胞检测基因数", y = "细胞数") +
+    theme_bw(base_size = 11, base_family = cjk_font) +
+    theme(plot.title = element_text(face = "bold"))
+  save_png(p3, "aucell_genecount.png", 7, 4.5)
+  fig_paths <- c(fig_paths, file.path(figs_dir, "aucell_genecount.png"))
+
+  ## 图4：混淆矩阵热图（效度验证：签名分配 vs 真实细胞类型）
+  cm_df <- as.data.frame(as.table(confMat))
+  colnames(cm_df) <- c("signature", "cell_type", "count")
+  cm_df$prop <- ave(cm_df$count, cm_df$signature,
+                    FUN = function(x) if (sum(x) > 0) x / sum(x) else x)  # 行内占比=特异性
+  p4 <- ggplot(cm_df, aes(cell_type, signature, fill = prop)) +
+    geom_tile(color = "white", linewidth = 0.5) +
+    geom_text(aes(label = count, color = prop > 0.5), size = 3, show.legend = FALSE) +
+    scale_fill_gradient(name = "行内占比\n(特异性)", low = "white", high = "#2166AC",
+                        limits = c(0, 1)) +
+    scale_color_manual(values = c(`TRUE` = "white", `FALSE` = "grey25")) +
+    labs(title = "AUCell 效度验证：签名分配 vs 真实细胞类型",
+         subtitle = "GSE60361 小鼠脑 | 色=行内占比，数字=细胞数；每行最亮格落在对应类型=识别准",
+         x = "真实细胞类型 (Zeisel et al.)", y = "AUCell 签名") +
+    theme_minimal(base_size = 11, base_family = cjk_font) +
+    theme(axis.text.x = element_text(angle = 32, hjust = 1),
+          panel.grid = element_blank(),
+          plot.title = element_text(face = "bold"))
+  save_png(p4, "aucell_confusion_heatmap.png", 8.5, 4.8)
+  fig_paths <- c(fig_paths, file.path(figs_dir, "aucell_confusion_heatmap.png"))
 } else {
   message("未安装 ggplot2/reshape2，跳过可视化（不影响打分与导出）")
 }

@@ -75,4 +75,29 @@ if (requireNamespace("ggplot2", quietly = TRUE) &&
   ggsave(fp, p, width = 6, height = 4.5, dpi = 300,
          device = if (qz) "png" else NULL, type = if (qz) "quartz" else NULL)
   cat("\n图已写入:", fp, "  ← UCell 分数小提琴图\n")
+
+  ## ---- 可视化2：降维特征图，按 UCell 分数着色（官方 FeaturePlot 等价图）----
+  ## sample.matrix 无现成降维坐标，且仅 30 细胞（UMAP/tSNE 不适用）→ 用 PCA 算 2D 嵌入。
+  logm <- log1p(as.matrix(sample.matrix))                     # log 归一化
+  vg   <- order(apply(logm, 1, var), decreasing = TRUE)[seq_len(min(1000, nrow(logm)))]
+  pca  <- prcomp(t(logm[vg, ]), scale. = FALSE)
+  emb  <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2],
+                     cell = colnames(sample.matrix))
+  dfp  <- merge(dfu, emb, by = "cell")
+
+  p2 <- ggplot(dfp[order(dfp$UCell), ], aes(PC1, PC2, color = UCell)) +
+    geom_point(size = 2.6, alpha = 0.9) +
+    facet_wrap(~ signature) +
+    scale_color_gradient(low = "grey85", high = "#D7301F", name = "UCell\n分数") +
+    labs(title = "UCell：PCA 嵌入上的签名活性",
+         subtitle = "sample.matrix（仅 30 细胞，演示用）| 颜色越红 = 该签名在此细胞越活跃",
+         x = "PC1", y = "PC2") +
+    theme_minimal(base_size = 11, base_family = cjk_font) +
+    theme(plot.title = element_text(face = "bold"),
+          panel.grid.minor = element_blank())
+
+  fp2 <- file.path(figs_dir, "ucell_pca_featureplot.png")
+  ggsave(fp2, p2, width = 7.5, height = 4, dpi = 300,
+         device = if (qz) "png" else NULL, type = if (qz) "quartz" else NULL)
+  cat("图已写入:", fp2, "  ← UCell PCA 特征图\n")
 }
