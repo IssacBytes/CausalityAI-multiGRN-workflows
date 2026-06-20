@@ -139,7 +139,6 @@ if (requireNamespace("ggplot2", quietly = TRUE) &&
                color = "#D7301F", linetype = 2, linewidth = 0.5) +
     facet_wrap(~ signature, scales = "free", ncol = 3) +
     labs(title = "AUCell：各签名 AUC 分布与选定阈值",
-         subtitle = "GSE60361 小鼠脑 | 红色虚线 = 自动选定阈值",
          x = "AUC 分数", y = "细胞数") +
     theme_bw(base_size = 11, base_family = cjk_font) +
     theme(plot.title = element_text(face = "bold"),
@@ -158,8 +157,7 @@ if (requireNamespace("ggplot2", quietly = TRUE) &&
       geom_point(size = 0.35) +
       facet_wrap(~ signature, ncol = 3) +
       scale_color_gradient(low = "grey88", high = "#D7301F") +
-      labs(title = "AUCell：t-SNE 上的签名活性 (AUC)",
-           subtitle = "GSE60361 小鼠脑 | 颜色越红 = 该签名在此细胞越活跃") +
+      labs(title = "AUCell：t-SNE 上的签名活性 (AUC)") +
       theme_minimal(base_size = 11, base_family = cjk_font) +
       theme(plot.title = element_text(face = "bold"),
             axis.text = element_blank(), panel.grid = element_blank(),
@@ -179,7 +177,6 @@ if (requireNamespace("ggplot2", quietly = TRUE) &&
              label = sprintf("aucMaxRank = %d (5%%)", aucMaxRankUsed),
              color = "#D7301F", size = 3.4, family = cjk_font) +
     labs(title = "AUCell：每个细胞检测到的基因数",
-         subtitle = "GSE60361 小鼠脑 | 多数细胞远高于 aucMaxRank，故该参数取值安全",
          x = "每细胞检测基因数", y = "细胞数") +
     theme_bw(base_size = 11, base_family = cjk_font) +
     theme(plot.title = element_text(face = "bold"))
@@ -198,7 +195,6 @@ if (requireNamespace("ggplot2", quietly = TRUE) &&
                         limits = c(0, 1)) +
     scale_color_manual(values = c(`TRUE` = "white", `FALSE` = "grey25")) +
     labs(title = "AUCell 效度验证：签名分配 vs 真实细胞类型",
-         subtitle = "GSE60361 小鼠脑 | 色=行内占比，数字=细胞数；每行最亮格落在对应类型=识别准",
          x = "真实细胞类型 (Zeisel et al.)", y = "AUCell 签名") +
     theme_minimal(base_size = 11, base_family = cjk_font) +
     theme(axis.text.x = element_text(angle = 32, hjust = 1),

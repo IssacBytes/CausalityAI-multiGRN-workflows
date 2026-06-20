@@ -125,18 +125,13 @@ if (requireNamespace("ggplot2", quietly = TRUE)) {
     geom_boxplot(width = 0.55, outlier.shape = NA, alpha = 0.9,
                  position = position_dodge(0.66)) +
     scale_fill_manual(values = pal, name = "性别") +
-    labs(title = "ssGSEA 验证：性别特异基因集按性别分离",
-         subtitle = sprintf("commonPickrellHuang 微阵列 (%d 女 + %d 男) · 官方 GSVA vignette 同款验证",
-                            sum(exprSet$Gender == "Female"), sum(exprSet$Gender == "Male")),
-         x = NULL, y = "ssGSEA 富集分数",
-         caption = "MSY = 男性 Y 染色体基因；XiE = 逃逸 X 失活的基因") +
+    labs(title = "ssGSEA：性别特异基因集分数（按性别）",
+         x = NULL, y = "ssGSEA 富集分数") +
     theme_classic(base_size = 13, base_family = cjk_font) +
-    theme(plot.title    = element_text(face = "bold", size = 15),
-          plot.subtitle = element_text(color = "grey35", size = 10.5),
-          plot.caption  = element_text(color = "grey45", size = 9),
-          axis.text.x   = element_text(size = 11, lineheight = 0.9),
+    theme(plot.title  = element_text(face = "bold", size = 15),
+          axis.text.x = element_text(size = 11, lineheight = 0.9),
           legend.position = "top",
-          legend.title  = element_text(face = "bold"))
+          legend.title = element_text(face = "bold"))
 
   fp <- file.path(figs_dir, "ssgsea_sex_signature.png")
   ggsave(fp, p, width = 7, height = 5.2, dpi = 300,

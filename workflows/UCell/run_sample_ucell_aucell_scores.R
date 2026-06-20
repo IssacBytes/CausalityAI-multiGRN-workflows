@@ -66,7 +66,6 @@ if (requireNamespace("ggplot2", quietly = TRUE) &&
     geom_jitter(width = 0.08, size = 0.5, alpha = 0.5) +
     scale_fill_brewer(palette = "Set2", guide = "none") +
     labs(title = "UCell：各签名分数分布",
-         subtitle = "UCell 包自带 sample.matrix | 小提琴+箱线+散点",
          x = "签名", y = "UCell 分数 (0–1)") +
     theme_bw(base_size = 11, base_family = cjk_font) +
     theme(plot.title = element_text(face = "bold"))
@@ -90,7 +89,6 @@ if (requireNamespace("ggplot2", quietly = TRUE) &&
     facet_wrap(~ signature) +
     scale_color_gradient(low = "grey85", high = "#D7301F", name = "UCell\n分数") +
     labs(title = "UCell：PCA 嵌入上的签名活性",
-         subtitle = "sample.matrix（仅 30 细胞，演示用）| 颜色越红 = 该签名在此细胞越活跃",
          x = "PC1", y = "PC2") +
     theme_minimal(base_size = 11, base_family = cjk_font) +
     theme(plot.title = element_text(face = "bold"),
