@@ -15,6 +15,11 @@ Reference: Aibar et al., 2017, *Nature Methods* (SCENIC); official vignette
   - 基因集：包自带 `inst/examples/geneSignatures.gmt`（脑细胞类型签名）
   - t-SNE / 标签：包自带 `cellsTsne.RData` / `mouseBrain_cellLabels.tsv`
   - 导出 HTML / PDF（xelatex）供学习；逐块可测（默认 `eval=FALSE`）。
+- `run_aucell_mousebrain.R` — **AUCell 运行脚本**（测试/复现用）。官方 GSE60361 小鼠脑
+  完整流程：下载（自动缓存到 `data/`）→ buildRankings → calcAUC → 阈值分配 →
+  **混淆矩阵效度验证**（对照包自带真实细胞标签）。结果写 `results/`（AUC 宽表 + §7 长表
+  + 混淆矩阵）。可移植路径（§5）。运行：`Rscript workflows/AUCell/run_aucell_mousebrain.R`
+  （首次联网下载约几十 MB，之后读缓存）。
 
 ## Chapters
 
