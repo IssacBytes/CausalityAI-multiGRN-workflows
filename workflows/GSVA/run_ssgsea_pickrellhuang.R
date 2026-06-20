@@ -91,6 +91,56 @@ long <- data.frame(
   row.names = NULL)
 write.csv(long, file.path(results_dir, "ssgsea_scores_long.csv"), row.names = FALSE)
 
+## ---- 可视化：性别特异基因集的 ssGSEA 分数（官方 GSVA vignette 招牌验证图）----
+## Pickrell/Huang 是 HapMap 淋巴母细胞系，无明显表型分组（热图意义不大）；
+## 但有真实"性别"表型。官方用性别特异基因集验证：MSY（男性 Y 染色体基因）应在
+## 男性高、XiE（X 失活逃逸基因）应在女性高。这是干净、可解读的展示级验证图。
+fig_paths <- character(0)
+if (requireNamespace("ggplot2", quietly = TRUE)) {
+  library(ggplot2)
+  figs_dir <- file.path(results_dir, "figures")
+  dir.create(figs_dir, showWarnings = FALSE, recursive = TRUE)
+  cjk_font <- if (.Platform$OS.type == "windows") "Microsoft YaHei" else "PingFang SC"  # §5
+  qz <- capabilities("aqua")
+
+  data(genderGenesEntrez)                                   # msYgenesEntrez / XiEgenesEntrez
+  sexSets <- GeneSetCollection(
+    GeneSet(as.character(msYgenesEntrez), geneIdType = EntrezIdentifier(), setName = "MSY"),
+    GeneSet(as.character(XiEgenesEntrez), geneIdType = EntrezIdentifier(), setName = "XiE"))
+  es_sex <- gsva(ssgseaParam(exprSet, sexSets, minSize = 2, maxSize = 500,
+                             alpha = 0.25, normalize = TRUE,
+                             annotation = NullIdentifier()), verbose = FALSE)
+  sm <- exprs(es_sex)
+
+  dfs <- data.frame(
+    geneset = factor(rep(rownames(sm), times = ncol(sm)),
+                     levels = c("MSY", "XiE"),
+                     labels = c("MSY\n(男性 Y 染色体)", "XiE\n(X 失活逃逸)")),
+    score   = as.numeric(sm),
+    gender  = factor(rep(exprSet$Gender, each = nrow(sm)),
+                     levels = c("Male", "Female"), labels = c("男性", "女性")))
+
+  pal <- c(`男性` = "#2C7FB8", `女性` = "#D95F62")
+  p <- ggplot(dfs, aes(geneset, score, fill = gender)) +
+    geom_boxplot(width = 0.55, outlier.shape = NA, alpha = 0.9,
+                 position = position_dodge(0.66)) +
+    scale_fill_manual(values = pal, name = "性别") +
+    labs(title = "ssGSEA：性别特异基因集分数（按性别）",
+         x = NULL, y = "ssGSEA 富集分数") +
+    theme_classic(base_size = 13, base_family = cjk_font) +
+    theme(plot.title  = element_text(face = "bold", size = 15),
+          axis.text.x = element_text(size = 11, lineheight = 0.9),
+          legend.position = "top",
+          legend.title = element_text(face = "bold"))
+
+  fp <- file.path(figs_dir, "ssgsea_sex_signature.png")
+  ggsave(fp, p, width = 7, height = 5.2, dpi = 300,
+         device = if (qz) "png" else NULL, type = if (qz) "quartz" else NULL)
+  fig_paths <- c(fig_paths, fp)
+} else {
+  message("未安装 ggplot2，跳过可视化（不影响打分与导出）")
+}
+
 ## ---- 摘要 ----
 cat("\n=== ssGSEA 完成 / done ===\n")
 cat(sprintf("通路 x 样本: %d x %d | 分数范围: [%.3f, %.3f]\n",
@@ -100,3 +150,4 @@ print(round(es_mat[1:3, 1:3], 3))
 cat("\n结果已写入:\n")
 cat("  ", file.path(results_dir, "ssgsea_pickrellhuang_scores.csv"), "\n")
 cat("  ", file.path(results_dir, "ssgsea_scores_long.csv"), "\n")
+for (fp in fig_paths) cat("  ", fp, "  ← 图\n")
