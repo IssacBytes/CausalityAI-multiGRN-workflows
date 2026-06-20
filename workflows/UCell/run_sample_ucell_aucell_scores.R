@@ -46,3 +46,33 @@ auc_scores <- getAUC(auc)
 
 cat("\nAUCell scores:\n")
 print(auc_scores[, 1:3])
+
+## ---- 可视化：UCell 分数按签名的小提琴图（官方 UCell vignette 用法）----
+if (requireNamespace("ggplot2", quietly = TRUE) &&
+    requireNamespace("reshape2", quietly = TRUE)) {
+  library(ggplot2)
+  figs_dir <- file.path("results", "figures")
+  dir.create(figs_dir, showWarnings = FALSE, recursive = TRUE)
+  cjk_font <- if (.Platform$OS.type == "windows") "Microsoft YaHei" else "PingFang SC"  # §5
+  qz <- capabilities("aqua")
+
+  dfu <- reshape2::melt(as.matrix(ucell_scores),
+                        varnames = c("cell", "signature"), value.name = "UCell")
+  dfu$signature <- sub("_UCell$", "", dfu$signature)        # 去掉列名后缀
+
+  p <- ggplot(dfu, aes(signature, UCell, fill = signature)) +
+    geom_violin(scale = "width", alpha = 0.7, color = NA) +
+    geom_boxplot(width = 0.12, outlier.size = 0.5, alpha = 0.9) +
+    geom_jitter(width = 0.08, size = 0.5, alpha = 0.5) +
+    scale_fill_brewer(palette = "Set2", guide = "none") +
+    labs(title = "UCell：各签名分数分布",
+         subtitle = "UCell 包自带 sample.matrix | 小提琴+箱线+散点",
+         x = "签名", y = "UCell 分数 (0–1)") +
+    theme_bw(base_size = 11, base_family = cjk_font) +
+    theme(plot.title = element_text(face = "bold"))
+
+  fp <- file.path(figs_dir, "ucell_score_violin.png")
+  ggsave(fp, p, width = 6, height = 4.5, dpi = 300,
+         device = if (qz) "png" else NULL, type = if (qz) "quartz" else NULL)
+  cat("\n图已写入:", fp, "  ← UCell 分数小提琴图\n")
+}
