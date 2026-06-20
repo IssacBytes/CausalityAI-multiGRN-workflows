@@ -19,6 +19,10 @@ Barbie et al., 2009, *Nature* (ssGSEA).
   源码级讲解 `gsva` 与 `ssgsea` 的全部参数、param-object API、调用调度流程。
   真实数据：`commonPickrellHuang`（微阵列 + RNA-seq，演示 `kcdf`）、`gbm_VerhaakEtAl`
   （分子亚型复现）、`c2BroadSets`（MSigDB C2 通路）。**导出 HTML / PDF（xelatex）供学习**，逐块可测。
+- `run_gsva_pickrellhuang.R` — **GSVA 运行脚本**（测试/复现用）。用 `gsvaParam` 在官方
+  `commonPickrellHuang` 上跑，演示 `kcdf`（微阵列→Gaussian、RNA-seq 计数→Poisson）+
+  跨平台一致性检查；结果写 `results/`（两平台宽表 + §7 长表）。离线可跑。
+  运行：`Rscript workflows/GSVA/run_gsva_pickrellhuang.R`
 - `run_ssgsea_pickrellhuang.R` — **ssGSEA 运行脚本**（测试/复现用）。ssGSEA 即 GSVA 包的
   `ssgsea` method（CLAUDE.md §1），用官方 `commonPickrellHuang` 微阵列 eset + C2 canonical
   通路打分，结果写 `results/`（宽表 + §7 统一长表）。可移植路径（§5），离线可跑。
